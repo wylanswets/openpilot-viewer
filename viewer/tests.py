@@ -69,3 +69,8 @@ class DriveListCameraTests(TestCase):
         (self.raw / "00000003--cccccccccc--0").mkdir()
         _, drives = self.get_rows()
         self.assertEqual(drives[0]["thumbnails"], [])
+
+    def test_no_stitched_path_line(self):
+        self.make_drive("00000004--dddddddddd", ["fcamera"])
+        response, _ = self.get_rows()
+        self.assertNotContains(response, "Stitched path")

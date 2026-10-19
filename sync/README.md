@@ -1,11 +1,11 @@
 # Sync container
 
 Copies drives from the device (comma 3/3X) to the server every 5 minutes (`entrypoint.sh`
-runs `c3x_sync.sh` under `flock`, so runs never overlap) and stitches the videos.
+runs `device_sync.sh` under `flock`, so runs never overlap) and stitches the videos.
 
 ## Settings
 
-`c3x_sync.sh` reads its settings from environment variables, so the repository does not
+`device_sync.sh` reads its settings from environment variables, so the repository does not
 need to contain the address of any particular device. Only `C3X_IP` is required; the
 others default to the container's mounts.
 

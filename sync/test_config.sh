@@ -1,5 +1,5 @@
 #!/bin/bash
-# Tests for the configuration block of c3x_sync.sh. Run: bash sync/test_config.sh
+# Tests for the configuration block of device_sync.sh. Run: bash sync/test_config.sh
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
 PASS=0; FAIL=0
@@ -8,7 +8,7 @@ check() { local name=$1; shift; if "$@"; then PASS=$((PASS+1)); echo "ok   $name
 T=$(mktemp -d)
 # only the configuration block, run in a clean environment (DELETED_FILE moved to a temp
 # folder because the block touches it)
-block() { sed -n '/^# Configuration$/,/^# End Configuration$/p' "$HERE/c3x_sync.sh"; }
+block() { sed -n '/^# Configuration$/,/^# End Configuration$/p' "$HERE/device_sync.sh"; }
 run() { # run VAR=value ... -- then print the variables named in $PRINT
     env -i PATH="$PATH" DELETED_FILE="$T/deleted.txt" "$@" bash -c "set -euo pipefail; $(block)
         for v in \$PRINT; do echo \"\$v=\${!v}\"; done" 2>&1
@@ -31,7 +31,7 @@ check "settings can be overridden" test "$out" = "$(printf '%s\n' C3X_USER=pilot
 out=$(run C3X_IP=10.1.2.3 PRINT=SSH_OPTS)
 check "ssh options use the key and known_hosts settings" test "$out" = "SSH_OPTS=-i /keys/openpilot_sync_ed25519 -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/app/ssh/known_hosts -o BatchMode=yes"
 
-check "no device address is left in the script" bash -c "! grep -nE '[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' '$HERE/c3x_sync.sh'"
+check "no device address is left in the script" bash -c "! grep -nE '[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' '$HERE/device_sync.sh'"
 
 echo; echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

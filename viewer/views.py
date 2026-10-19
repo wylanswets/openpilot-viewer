@@ -17,7 +17,7 @@ from django.views.decorators.http import require_POST
 from django.contrib import messages
 import shutil
 
-from . import tracks
+from . import summary, tracks
 
 DEFAULT_OLD_DATE = datetime(1900, 1, 1)
 
@@ -229,6 +229,13 @@ def drive_track(request, route_id):
     if not tracks.VALID_ROUTE_RE.match(route_id):
         raise Http404("Unknown route")
     return JsonResponse(tracks.route_track(route_id, RAW_DIR, METADATA_DIR / "tracks"))
+
+
+def drive_summary(request, route_id):
+    """Driving summary of a route as JSON, for the summary panel on the drive page."""
+    if not tracks.VALID_ROUTE_RE.match(route_id):
+        raise Http404("Unknown route")
+    return JsonResponse(summary.route_summary(route_id, RAW_DIR, METADATA_DIR / "summaries"))
 
 
 def segment_list(request, route_id):

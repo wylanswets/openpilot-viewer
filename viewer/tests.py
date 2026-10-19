@@ -5,7 +5,7 @@ from unittest import mock
 from django.test import TestCase
 from django.urls import reverse
 
-from viewer import tracks, views
+from viewer import summary, tracks, views
 from viewer.templatetags import custom_filters
 
 
@@ -91,6 +91,29 @@ class DriveListCameraTests(TestCase):
         self.assertContains(response, 'id="route-map-resize"')
         self.assertContains(response, 'id="route-map" class="w-full h-96')
         self.assertContains(response, 'mapEl.style.height = enlarged ? "85vh" : ""')
+
+    def test_summary_panel_is_below_all_the_cameras(self):
+        self.make_drive("00000010--3333333333", ["fcamera", "ecamera", "dcamera"])
+        response = self.client.get(reverse("drive_detail", args=["00000010--3333333333"]))
+        html = response.content.decode()
+        panel = html.index('id="summary-section"')
+        for label in ("Front Camera", "Wide Camera", "Driver Camera"):
+            self.assertLess(html.index(f">{label}<"), panel)
+        self.assertContains(response, reverse("drive_summary", args=["00000010--3333333333"]))
+
+    def test_summary_graph_has_zoom_controls_and_pinned_libraries(self):
+        self.make_drive("00000011--4444444444", ["fcamera"])
+        response = self.client.get(reverse("drive_detail", args=["00000011--4444444444"]))
+        for control in ("summary-zoom-in", "summary-zoom-out", "summary-pan-left",
+                        "summary-pan-right", "summary-zoom-reset", "summary-range"):
+            self.assertContains(response, f'id="{control}"')
+        # every script loaded from a CDN carries an integrity hash
+        html = response.content.decode()
+        libraries = ("leaflet", "chart.js", "hammerjs", "chartjs-plugin-zoom")
+        tags = [tag.split(">")[0] for tag in html.split("<script")[1:]]
+        for library in libraries:
+            (tag,) = [tag for tag in tags if f"unpkg.com/{library}" in tag]
+            self.assertIn("integrity=", tag)
 
     def test_no_stitched_path_line(self):
         self.make_drive("00000004--dddddddddd", ["fcamera"])
@@ -195,3 +218,214 @@ class RouteTrackTests(TestCase):
     def test_track_endpoint_rejects_odd_route_ids(self):
         response = self.client.get(reverse("drive_track", args=["bad.id"]))
         self.assertEqual(response.status_code, 404)
+
+
+def write_drive_qlog(path, samples, onroad=(), stale_header=False):
+    """Write a qlog.zst from 10 Hz drive samples and onroadEvents.
+
+    samples: (t_seconds, v_m_s, wheel, gas, brake, lat, long) per carState/carControl.
+    onroad:  (t_seconds, [event names]) per onroadEvents message.
+    """
+    import zstandard as zstd
+
+    schema = tracks._schema()
+    chunks = []
+
+    def message(t):
+        return schema.Event.new_message(logMonoTime=int(t * 1e9) + 1)
+
+    for t, v, wheel, gas, brake, lat, long_ in samples:
+        control = message(t)
+        cc = control.init("carControl")
+        cc.latActive, cc.longActive = lat, long_
+        chunks.append(control.to_bytes())
+        state = message(t)
+        cs = state.init("carState")
+        cs.vEgo, cs.steeringPressed, cs.gasPressed, cs.brakePressed = v, wheel, gas, brake
+        chunks.append(state.to_bytes())
+    if stale_header:
+        # qlog headers (initData, ...) keep the timestamp from when the route began
+        header = schema.Event.new_message(logMonoTime=1)
+        header.init("initData")
+        chunks.insert(0, header.to_bytes())
+    for t, names in onroad:
+        event = message(t)
+        listing = event.init("onroadEvents", len(names))
+        for i, name in enumerate(names):
+            listing[i].name = name
+        chunks.append(event.to_bytes())
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(zstd.ZstdCompressor().compress(b"".join(chunks)))
+
+
+def run(start, seconds, v=20.0, wheel=False, gas=False, brake=False, lat=False, long_=False):
+    """10 Hz samples for `seconds` seconds from time `start`."""
+    return [
+        (start + i / 10, v, wheel, gas, brake, lat, long_) for i in range(int(seconds * 10))
+    ]
+
+
+class DriveSummaryTests(TestCase):
+    ROUTE = "00000009--9999999999"
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        self.raw = root / "raw"
+        self.cache = root / "metadata" / "summaries"
+        self.raw.mkdir()
+        patcher = mock.patch.multiple(views, RAW_DIR=self.raw, METADATA_DIR=root / "metadata")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def segment(self, number, samples, onroad=(), stale_header=False):
+        write_drive_qlog(
+            self.raw / f"{self.ROUTE}--{number}" / "qlog.zst", samples, onroad, stale_header
+        )
+
+    def summary(self):
+        return summary.route_summary(self.ROUTE, self.raw, self.cache)
+
+    def test_pilot_and_driver_share_of_engaged_time(self):
+        # 5 s pilot steering + speed, 2 s driver pushing the wheel, 3 s nothing engaged
+        self.segment(0, (
+            run(0, 5, lat=True, long_=True)
+            + run(5, 2, lat=True, long_=True, wheel=True)
+            + run(7, 3)
+        ))
+        s = self.summary()
+        self.assertAlmostEqual(s["duration_s"], 10, delta=1)
+        self.assertAlmostEqual(s["engaged_s"], 7, delta=1)
+        self.assertAlmostEqual(s["steer_pilot_pct"], 100 * 5 / 7, delta=3)
+        self.assertAlmostEqual(s["steer_driver_pct"], 100 * 2 / 7, delta=3)
+        # the wheel push does not change who controls the speed
+        self.assertEqual(s["speed_pilot_pct"], 100.0)
+        self.assertEqual(s["speed_driver_pct"], 0.0)
+
+    def test_pedal_press_makes_speed_the_drivers(self):
+        self.segment(0, run(0, 4, lat=True, long_=True) + run(4, 3, lat=True, long_=True, gas=True))
+        s = self.summary()
+        self.assertAlmostEqual(s["speed_driver_pct"], 100 * 3 / 7, delta=3)
+        self.assertEqual(s["steer_pilot_pct"], 100.0)
+        self.assertEqual(s["counts"]["pedal_override"], 1)
+
+    def test_steering_only_time_counts_speed_as_the_drivers(self):
+        # lateral control on, longitudinal off: the driver is controlling speed
+        self.segment(0, run(0, 5, lat=True))
+        s = self.summary()
+        self.assertEqual(s["steer_pilot_pct"], 100.0)
+        self.assertEqual(s["speed_pilot_pct"], 0.0)
+        self.assertEqual(s["speed_driver_pct"], 100.0)
+
+    def test_nothing_engaged_has_no_percentages(self):
+        self.segment(0, run(0, 5))
+        s = self.summary()
+        self.assertEqual(s["engaged_s"], 0)
+        self.assertIsNone(s["steer_pilot_pct"])
+        self.assertIsNone(s["speed_pilot_pct"])
+        self.assertEqual(s["interruptions"], 0)
+
+    def test_speed_and_distance(self):
+        self.segment(0, run(0, 10, v=20.0) + run(10, 1, v=25.0))
+        s = self.summary()
+        self.assertAlmostEqual(s["distance_mi"], (200 + 25) / 1609.344, delta=0.006)
+        self.assertEqual(s["max_mph"], round(25 * 2.2369363, 1))
+        self.assertAlmostEqual(s["avg_mph"], 20.5 * 2.2369363, delta=2)
+
+    def test_interruptions_are_counted_once_per_episode(self):
+        self.segment(0, (
+            run(0, 3, lat=True, long_=True)
+            + run(3, 2, lat=True, long_=True, wheel=True)    # wheel override
+            + run(5, 3, lat=True, long_=True)
+            + run(8, 2, lat=True, long_=True, brake=True)    # pedal override
+            + run(10, 2, lat=True)                           # speed control turned off
+            + run(12, 2)                                     # steering turned off
+        ))
+        counts = self.summary()["counts"]
+        self.assertEqual(counts["wheel_override"], 1)
+        self.assertEqual(counts["pedal_override"], 1)
+        self.assertEqual(counts["speed_off"], 1)
+        self.assertEqual(counts["steer_off"], 1)
+        self.assertEqual(self.summary()["interruptions"], 4)
+
+    def test_flickering_wheel_or_pedal_presses_count_as_one_episode(self):
+        self.segment(0, (
+            run(0, 2, lat=True, long_=True)
+            + run(2, 0.5, lat=True, long_=True, wheel=True, gas=True)
+            + run(2.5, 0.5, lat=True, long_=True)
+            + run(3, 0.5, lat=True, long_=True, wheel=True, gas=True)
+            + run(3.5, 0.5, lat=True, long_=True)
+            + run(4, 0.5, lat=True, long_=True, wheel=True, gas=True)
+            + run(4.5, 10, lat=True, long_=True)
+            + run(14.5, 0.5, lat=True, long_=True, wheel=True)   # well after: a new episode
+        ))
+        counts = self.summary()["counts"]
+        self.assertEqual(counts["wheel_override"], 2)
+        self.assertEqual(counts["pedal_override"], 1)
+
+    def test_old_header_timestamps_do_not_shift_the_time_axis(self):
+        # carState samples start at mono 1000 s; a header event is stamped long before
+        self.segment(0, run(1000, 58, lat=True), stale_header=True)
+        self.segment(1, run(2000, 5, lat=True) + run(2005, 2, lat=True, wheel=True), stale_header=True)
+        s = self.summary()
+        self.assertEqual(s["series"]["t"][0], 0)
+        self.assertNotIn(None, s["series"]["mph"])
+        self.assertAlmostEqual(s["events"][0][0], 65, delta=1)  # 5 s into segment 1
+
+    def test_a_short_gap_between_segments_does_not_break_the_line(self):
+        self.segment(0, run(1, 58, lat=True))      # a segment starts ~1 s late
+        self.segment(1, run(1, 58, lat=True))
+        self.assertNotIn(None, self.summary()["series"]["mph"])
+
+    def test_onroad_events_are_reported_when_they_start(self):
+        self.segment(0, run(0, 10, lat=True), onroad=[
+            (0.5, []),
+            (1.0, ["steerSaturated"]),
+            (1.5, ["steerSaturated"]),            # still the same event
+            (2.0, []),
+            (3.0, ["steerSaturated", "laneChange"]),
+            (4.0, ["driverDistracted1"]),
+            (4.5, ["driverDistracted2"]),         # escalation: same incident
+            (6.0, ["wrongGear"]),                 # not reported
+        ])
+        counts = self.summary()["counts"]
+        self.assertEqual(counts["steer_saturated"], 2)
+        self.assertEqual(counts["lane_change"], 1)
+        self.assertEqual(counts["driver_distracted"], 1)
+        self.assertNotIn("wrongGear", counts)
+
+    def test_event_already_active_at_segment_start_is_not_new(self):
+        self.segment(0, run(0, 5, lat=True), onroad=[(0.1, ["steerSaturated"]), (0.6, ["steerSaturated"])])
+        self.assertNotIn("steer_saturated", self.summary()["counts"])
+
+    def test_segments_are_merged_with_offsets_and_gaps(self):
+        self.segment(0, run(0, 5, lat=True, long_=True))
+        self.segment(2, run(0, 2, lat=True, long_=True) + run(2, 3, lat=True, long_=True, wheel=True))
+        s = self.summary()
+        self.assertEqual(s["segments"], 2)
+        self.assertAlmostEqual(s["engaged_s"], 10, delta=1)
+        self.assertEqual(s["events"][0][1], "wheel_override")
+        self.assertAlmostEqual(s["events"][0][0], 122, delta=1)  # segment 2 starts at 120 s
+        series = s["series"]
+        self.assertEqual(len(series["t"]), len(series["mph"]))
+        self.assertIn(None, series["mph"])  # the missing segment 1 breaks the line
+        self.assertEqual(series["t"], sorted(series["t"]))
+
+    def test_summary_is_cached_per_segment(self):
+        self.segment(0, run(0, 5, lat=True))
+        self.summary()
+        self.assertTrue((self.cache / f"{self.ROUTE}.json").exists())
+        with mock.patch.object(summary, "parse_segment", side_effect=AssertionError("reparsed")):
+            self.assertEqual(self.summary()["segments"], 1)
+
+    def test_summary_endpoint(self):
+        self.segment(0, run(0, 5, lat=True, long_=True))
+        response = self.client.get(reverse("drive_summary", args=[self.ROUTE]))
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["steer_pilot_pct"], 100.0)
+        self.assertEqual(set(data["series"]), {"t", "mph", "steer", "speed"})
+
+    def test_summary_endpoint_rejects_odd_route_ids(self):
+        self.assertEqual(self.client.get(reverse("drive_summary", args=["bad.id"])).status_code, 404)

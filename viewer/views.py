@@ -9,8 +9,9 @@ from datetime import datetime
 from collections import defaultdict
 from collections import Counter
 
-from django.http import Http404, JsonResponse
+from django.http import FileResponse, Http404, JsonResponse
 from django.shortcuts import render, redirect
+from django.urls import reverse
 from django.core.paginator import Paginator
 
 from django.views.decorators.http import require_POST
@@ -18,6 +19,7 @@ from django.contrib import messages
 import shutil
 
 from . import summary, tracks
+from . import thumbnails as route_thumbnails  # drive_list has a local named thumbnails
 
 DEFAULT_OLD_DATE = datetime(1900, 1, 1)
 
@@ -184,6 +186,19 @@ def drive_list(request):
     page_number = request.GET.get("page", 1)
     page_obj = paginator.get_page(page_number)
 
+    # Route map thumbnails: show the ones that exist, make the missing ones in the background.
+    thumbs_dir = METADATA_DIR / "thumbs"
+    missing = []
+    for drive in page_obj:
+        route_id = drive["route_id"]
+        image = route_thumbnails.image_path(thumbs_dir, route_id)
+        if image.exists():
+            drive["thumbnail_url"] = f"{reverse('drive_thumbnail', args=[route_id])}?v={int(image.stat().st_mtime)}"
+        if route_thumbnails.needs_work(thumbs_dir, route_id, len(raw_routes_grouped.get(route_id, []))):
+            drive["thumbnail_pending"] = True
+            missing.append(route_id)
+    route_thumbnails.start_background(missing, RAW_DIR, METADATA_DIR)
+
     return render(request, "viewer/drive_list.html", {
         "page_obj": page_obj,
         "thumb_indices": thumb_indices,
@@ -236,6 +251,18 @@ def drive_summary(request, route_id):
     if not tracks.VALID_ROUTE_RE.match(route_id):
         raise Http404("Unknown route")
     return JsonResponse(summary.route_summary(route_id, RAW_DIR, METADATA_DIR / "summaries"))
+
+
+def drive_thumbnail(request, route_id):
+    """The route map thumbnail (PNG) of a route, if it has been made."""
+    if not tracks.VALID_ROUTE_RE.match(route_id):
+        raise Http404("Unknown route")
+    path = route_thumbnails.image_path(METADATA_DIR / "thumbs", route_id)
+    if not path.is_file():
+        raise Http404("No thumbnail")
+    response = FileResponse(open(path, "rb"), content_type="image/png")
+    response["Cache-Control"] = "public, max-age=3600"
+    return response
 
 
 def segment_list(request, route_id):

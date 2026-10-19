@@ -1,11 +1,15 @@
+import os
 import tempfile
+import threading
+import time
+from io import BytesIO
 from pathlib import Path
 from unittest import mock
 
 from django.test import TestCase
 from django.urls import reverse
 
-from viewer import summary, tracks, views
+from viewer import summary, thumbnails, tracks, views
 from viewer.templatetags import custom_filters
 
 
@@ -32,6 +36,14 @@ class DriveListCameraTests(TestCase):
             self.addCleanup(patcher.stop)
         patcher = mock.patch.object(views, "PRESERVED_FILE", root / "preserved.json")
         patcher.start()
+        self.addCleanup(patcher.stop)
+        self.metadata = root / "metadata"
+        patcher = mock.patch.object(views, "METADATA_DIR", self.metadata)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        # never start the real thumbnail thread (it would fetch map tiles) in tests
+        patcher = mock.patch.object(thumbnails, "start_background")
+        self.start_background = patcher.start()
         self.addCleanup(patcher.stop)
 
     def make_drive(self, route_id, cameras):
@@ -114,6 +126,31 @@ class DriveListCameraTests(TestCase):
         for library in libraries:
             (tag,) = [tag for tag in tags if f"unpkg.com/{library}" in tag]
             self.assertIn("integrity=", tag)
+
+    def test_list_shows_an_existing_thumbnail(self):
+        self.make_drive("00000012--5555555555", ["fcamera"])
+        image = thumbnails.image_path(self.metadata / "thumbs", "00000012--5555555555")
+        image.parent.mkdir(parents=True)
+        image.write_bytes(b"png")
+        thumbnails._write_state(self.metadata / "thumbs", "00000012--5555555555", {"status": "ok", "segments": 0})
+        response = self.client.get(reverse("drive_list"))
+        self.assertContains(response, "/drive/00000012--5555555555/thumbnail.png?v=")
+        self.assertContains(response, 'alt="Map of the route"')
+        self.assertNotContains(response, "thumbnail-pending\" data-src")
+
+    def test_list_asks_for_missing_thumbnails_and_leaves_a_placeholder(self):
+        self.make_drive("00000013--6666666666", ["fcamera"])
+        response = self.client.get(reverse("drive_list"))
+        self.assertContains(response, 'class="thumbnail-pending" data-src="/drive/00000013--6666666666/thumbnail.png"')
+        self.start_background.assert_called_once()
+        self.assertEqual(self.start_background.call_args.args[0], ["00000013--6666666666"])
+
+    def test_route_known_to_have_no_gps_gets_no_placeholder_and_no_work(self):
+        self.make_drive("00000014--7777777777", ["fcamera"])
+        thumbnails._write_state(self.metadata / "thumbs", "00000014--7777777777", {"status": "no_gps", "segments": 0})
+        response = self.client.get(reverse("drive_list"))
+        self.assertNotContains(response, 'class="thumbnail-pending" data-src')
+        self.assertEqual(self.start_background.call_args.args[0], [])
 
     def test_no_stitched_path_line(self):
         self.make_drive("00000004--dddddddddd", ["fcamera"])
@@ -429,3 +466,294 @@ class DriveSummaryTests(TestCase):
 
     def test_summary_endpoint_rejects_odd_route_ids(self):
         self.assertEqual(self.client.get(reverse("drive_summary", args=["bad.id"])).status_code, 404)
+
+
+def tile_png(color=(200, 220, 200)):
+    from PIL import Image
+
+    out = BytesIO()
+    Image.new("RGB", (256, 256), color).save(out, format="PNG")
+    return out.getvalue()
+
+
+class ThumbnailGeometryTests(TestCase):
+    def test_world_pixels(self):
+        self.assertEqual(thumbnails.world_xy(0, 0, 0), (128, 128))
+        self.assertAlmostEqual(thumbnails.world_xy(0, -180, 3)[0], 0)
+        self.assertAlmostEqual(thumbnails.world_xy(0, 180, 3)[0], 256 * 8)
+        self.assertAlmostEqual(thumbnails.world_xy(85.0511, 0, 2)[1], 0, delta=0.5)
+
+    def fits(self, points, zoom):
+        x0, y1 = thumbnails.world_xy(min(p[0] for p in points), min(p[1] for p in points), zoom)
+        x1, y0 = thumbnails.world_xy(max(p[0] for p in points), max(p[1] for p in points), zoom)
+        return (
+            x1 - x0 <= thumbnails.WIDTH - 2 * thumbnails.PADDING
+            and y1 - y0 <= thumbnails.HEIGHT - 2 * thumbnails.PADDING
+        )
+
+    def test_zoom_is_the_closest_that_fits_the_route(self):
+        for points in (
+            [[35.0, -82.0], [35.0001, -82.0001]],      # a few metres
+            [[35.0, -82.0], [35.02, -82.03]],           # a few km
+            [[34.9, -82.3], [35.1, -82.0]],             # about 30 km
+        ):
+            zoom, left, top = thumbnails.layout(points)
+            self.assertTrue(self.fits(points, zoom), points)
+            if zoom < thumbnails.MAX_ZOOM:
+                self.assertFalse(self.fits(points, zoom + 1), points)
+        self.assertEqual(thumbnails.layout([[35.0, -82.0]])[0], thumbnails.MAX_ZOOM)
+
+    def test_route_is_centred_in_the_image(self):
+        points = [[35.0, -82.0], [35.02, -82.03]]
+        zoom, left, top = thumbnails.layout(points)
+        xs = [thumbnails.to_pixel(lat, lon, zoom, left, top)[0] for lat, lon in points]
+        ys = [thumbnails.to_pixel(lat, lon, zoom, left, top)[1] for lat, lon in points]
+        self.assertAlmostEqual((min(xs) + max(xs)) / 2, thumbnails.WIDTH / 2, delta=1)
+        self.assertAlmostEqual((min(ys) + max(ys)) / 2, thumbnails.HEIGHT / 2, delta=1)
+
+
+class ThumbnailRenderTests(TestCase):
+    LINES = [[[35.0, -82.0], [35.01, -82.012]]]
+
+    def render(self, source=None):
+        self.calls = []
+
+        def default(z, x, y):
+            self.calls.append((z, x, y))
+            return tile_png()
+
+        return thumbnails.render(self.LINES, source or default)
+
+    def test_route_is_drawn_over_the_tiles(self):
+        image = self.render()
+        self.assertEqual(image.size, (thumbnails.WIDTH, thumbnails.HEIGHT))
+        zoom, left, top = thumbnails.layout([p for line in self.LINES for p in line])
+        start = [round(v) for v in thumbnails.to_pixel(*self.LINES[0][0], zoom, left, top)]
+        end = [round(v) for v in thumbnails.to_pixel(*self.LINES[0][1], zoom, left, top)]
+        mid = ((start[0] + end[0]) // 2, (start[1] + end[1]) // 2)
+        r, g, b = image.getpixel(tuple(start))
+        self.assertTrue(g > 150 and r < 100, "start dot should be green")
+        r, g, b = image.getpixel(tuple(end))
+        self.assertTrue(r > 200 and g < 120, "end dot should be red")
+        r, g, b = image.getpixel(mid)
+        self.assertTrue(b > 200 and r < 100, "the line should be blue")
+        self.assertEqual(image.getpixel((5, 5)), (200, 220, 200))  # untouched map background
+
+    def test_map_credit_is_on_the_image(self):
+        image = self.render()
+        corner = image.getpixel((thumbnails.WIDTH - 3, thumbnails.HEIGHT - 3))
+        self.assertNotEqual(corner, (200, 220, 200))
+        # the credit box is lighter than the tile and has some dark text pixels in it
+        region = image.crop((thumbnails.WIDTH - 150, thumbnails.HEIGHT - 16, thumbnails.WIDTH, thumbnails.HEIGHT))
+        self.assertTrue(any(sum(px) < 450 for px in region.getdata()))
+
+    def test_tiles_asked_for_cover_the_image_with_valid_coordinates(self):
+        self.render()
+        zoom = self.calls[0][0]
+        self.assertTrue(self.calls)
+        for z, x, y in self.calls:
+            self.assertEqual(z, zoom)
+            self.assertTrue(0 <= x < 2 ** z and 0 <= y < 2 ** z)
+        self.assertEqual(len(self.calls), len(set(self.calls)))
+
+    def test_a_missing_tile_means_no_image(self):
+        self.assertIsNone(self.render(lambda z, x, y: None))
+
+    def test_empty_route_has_no_image(self):
+        self.assertIsNone(thumbnails.render([], lambda z, x, y: tile_png()))
+
+
+class TileCacheTests(TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.cache = Path(tmp.name)
+        self.fetched = []
+
+    def fetch(self, z, x, y):
+        self.fetched.append((z, x, y))
+        return tile_png()
+
+    def test_a_tile_is_fetched_once_and_then_served_from_disk(self):
+        first = thumbnails.get_tile(5, 3, 4, self.cache, self.fetch)
+        second = thumbnails.get_tile(5, 3, 4, self.cache, self.fetch)
+        self.assertEqual(first, second)
+        self.assertEqual(self.fetched, [(5, 3, 4)])
+
+    def test_a_tile_older_than_a_week_is_fetched_again(self):
+        thumbnails.get_tile(5, 3, 4, self.cache, self.fetch)
+        thumbnails.get_tile(5, 3, 4, self.cache, self.fetch, now=time.time() + thumbnails.TILE_MAX_AGE_S + 60)
+        self.assertEqual(len(self.fetched), 2)
+
+    def test_a_stale_copy_is_used_when_the_refetch_fails(self):
+        stale = thumbnails.get_tile(5, 3, 4, self.cache, self.fetch)
+
+        def failing(z, x, y):
+            raise OSError("no internet")
+
+        later = time.time() + thumbnails.TILE_MAX_AGE_S + 60
+        self.assertEqual(thumbnails.get_tile(5, 3, 4, self.cache, failing, now=later), stale)
+
+    def test_failure_with_nothing_cached_gives_none(self):
+        def failing(z, x, y):
+            raise OSError("no internet")
+
+        self.assertIsNone(thumbnails.get_tile(5, 3, 4, self.cache, failing))
+
+    def test_replies_that_are_not_tiles_are_not_cached(self):
+        for body in (b"<html>rate limited</html>", tile_png() + b"0" * thumbnails.MAX_TILE_BYTES):
+            self.assertIsNone(thumbnails.get_tile(5, 3, 4, self.cache, lambda z, x, y: body))
+            self.assertFalse((self.cache / "5" / "3" / "4.png").exists())
+
+
+class MakeThumbnailTests(TestCase):
+    ROUTE = "0000000a--aaaaaaaaaa"
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        self.raw = root / "raw"
+        self.metadata = root / "metadata"
+        self.raw.mkdir()
+        self.later = time.time() + 3600  # pretend the logs are an hour old
+        self.fetched = []
+
+    def fetch(self, z, x, y):
+        self.fetched.append((z, x, y))
+        return tile_png()
+
+    def segment(self, number, fixes, route=None):
+        write_qlog(self.raw / f"{route or self.ROUTE}--{number}" / "qlog.zst", fixes)
+
+    def make(self, route=None, **kwargs):
+        kwargs.setdefault("now", self.later)
+        kwargs.setdefault("fetch", self.fetch)
+        return thumbnails.make_thumbnail(route or self.ROUTE, self.raw, self.metadata, **kwargs)
+
+    def test_makes_a_png_and_then_leaves_it_alone(self):
+        from PIL import Image
+
+        self.segment(0, [(1, 35.0, -82.0, 5.0), (1, 35.005, -82.004, 5.0)])
+        self.assertEqual(self.make(), "made")
+        path = thumbnails.image_path(self.metadata / "thumbs", self.ROUTE)
+        with Image.open(path) as image:
+            self.assertEqual(image.size, (640, 260))
+            self.assertEqual(image.format, "PNG")
+        fetched = len(self.fetched)
+        self.assertEqual(self.make(), "fresh")
+        self.assertEqual(len(self.fetched), fetched)
+
+    def test_is_redone_when_the_route_grows(self):
+        self.segment(0, [(1, 35.0, -82.0, 5.0), (1, 35.001, -82.001, 5.0)])
+        self.assertEqual(self.make(), "made")
+        self.segment(1, [(1, 35.03, -82.05, 5.0), (1, 35.04, -82.06, 5.0)])
+        self.assertTrue(thumbnails.needs_work(self.metadata / "thumbs", self.ROUTE, 2))
+        self.assertEqual(self.make(), "made")
+        self.assertFalse(thumbnails.needs_work(self.metadata / "thumbs", self.ROUTE, 2))
+
+    def test_a_route_still_being_recorded_is_skipped(self):
+        self.segment(0, [(1, 35.0, -82.0, 5.0)])
+        self.assertEqual(self.make(now=time.time()), "recording")
+        self.assertEqual(self.fetched, [])
+        self.assertTrue(thumbnails.needs_work(self.metadata / "thumbs", self.ROUTE, 1))
+
+    def test_route_without_gps_is_remembered(self):
+        self.segment(0, [(0, 35.0, -82.0, 5.0)])
+        self.assertEqual(self.make(), "no_gps")
+        self.assertEqual(self.make(), "fresh")
+        self.assertFalse(thumbnails.needs_work(self.metadata / "thumbs", self.ROUTE, 1))
+        self.assertFalse(thumbnails.image_path(self.metadata / "thumbs", self.ROUTE).exists())
+        self.assertEqual(self.fetched, [])
+
+    def test_a_failed_tile_fetch_leaves_nothing_behind_and_retries_later(self):
+        self.segment(0, [(1, 35.0, -82.0, 5.0), (1, 35.001, -82.001, 5.0)])
+
+        def failing(z, x, y):
+            raise OSError("no internet")
+
+        self.assertEqual(self.make(fetch=failing), "failed")
+        self.assertFalse(thumbnails.image_path(self.metadata / "thumbs", self.ROUTE).exists())
+        self.assertTrue(thumbnails.needs_work(self.metadata / "thumbs", self.ROUTE, 1))
+        self.assertEqual(self.make(), "made")
+
+    def test_force_redoes_an_up_to_date_thumbnail(self):
+        self.segment(0, [(1, 35.0, -82.0, 5.0), (1, 35.001, -82.001, 5.0)])
+        self.make()
+        self.assertEqual(self.make(force=True), "made")
+
+
+class BackgroundThumbnailTests(TestCase):
+    def setUp(self):
+        patcher = mock.patch.object(thumbnails, "_backoff_until", 0.0)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_makes_each_route_in_a_background_thread(self):
+        made = []
+        thread = thumbnails.start_background(
+            ["a", "b"], "raw", "meta", make=lambda r, raw, meta: made.append((r, raw, meta)) or "made"
+        )
+        thread.join(5)
+        self.assertEqual(made, [("a", "raw", "meta"), ("b", "raw", "meta")])
+
+    def test_nothing_to_do_starts_nothing(self):
+        self.assertIsNone(thumbnails.start_background([], "raw", "meta", make=lambda *a: "made"))
+
+    def test_only_one_run_at_a_time(self):
+        release = threading.Event()
+        first = thumbnails.start_background(["a"], "raw", "meta", make=lambda *a: release.wait(5) and "made")
+        self.assertIsNotNone(first)
+        self.assertIsNone(thumbnails.start_background(["b"], "raw", "meta", make=lambda *a: "made"))
+        release.set()
+        first.join(5)
+        again = thumbnails.start_background(["b"], "raw", "meta", make=lambda *a: "made")
+        again.join(5)
+
+    def test_a_failure_stops_the_run_and_waits_before_trying_again(self):
+        made = []
+
+        def make(route, raw, meta):
+            made.append(route)
+            return "failed"
+
+        thumbnails.start_background(["a", "b"], "raw", "meta", make=make).join(5)
+        self.assertEqual(made, ["a"])
+        self.assertIsNone(thumbnails.start_background(["c"], "raw", "meta", make=make))
+
+    def test_an_exception_counts_as_a_failure_and_frees_the_lock(self):
+        def boom(*args):
+            raise RuntimeError("boom")
+
+        thumbnails.start_background(["a"], "raw", "meta", make=boom).join(5)
+        thumbnails._backoff_until = 0.0
+        thread = thumbnails.start_background(["b"], "raw", "meta", make=lambda *a: "made")
+        self.assertIsNotNone(thread)
+        thread.join(5)
+
+
+class ThumbnailEndpointTests(TestCase):
+    ROUTE = "0000000b--bbbbbbbbbb"
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.metadata = Path(tmp.name) / "metadata"
+        patcher = mock.patch.object(views, "METADATA_DIR", self.metadata)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_missing_thumbnail_is_a_404(self):
+        self.assertEqual(self.client.get(reverse("drive_thumbnail", args=[self.ROUTE])).status_code, 404)
+
+    def test_serves_the_png(self):
+        path = thumbnails.image_path(self.metadata / "thumbs", self.ROUTE)
+        path.parent.mkdir(parents=True)
+        path.write_bytes(tile_png())
+        response = self.client.get(reverse("drive_thumbnail", args=[self.ROUTE]))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "image/png")
+        self.assertEqual(b"".join(response.streaming_content), tile_png())
+
+    def test_odd_route_ids_are_rejected(self):
+        self.assertEqual(self.client.get(reverse("drive_thumbnail", args=["bad.id"])).status_code, 404)

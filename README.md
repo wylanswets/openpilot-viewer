@@ -12,7 +12,7 @@ A self-hosted web interface to view your OpenPilot drives (from Comma C3/C3X). A
 - HEVC video segments stitched into MP4 for each camera.  
 - Web interface to browse drives and play stitched videos.  
 - Supports Dockerized deployment for easy setup.  
-- Automatic deletion of old data when space on disk is below a threshhold.
+- Automatic deletion of old data when space on disk is below a threshold.
 - Optional “saved” drives to prevent automatic cleanup.  
 
 

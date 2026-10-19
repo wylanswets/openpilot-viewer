@@ -6,6 +6,22 @@
 {% block content %}
 <div class="max-w-6xl mx-auto px-4 py-8">
   <h1 class="text-3xl font-semibold mb-6">My Drives</h1>
+  {% if pending_deletes %}
+    <div class="mb-4 p-3 bg-yellow-50 border border-yellow-200 rounded-md text-sm">
+      <p class="font-medium mb-1">Being deleted ({{ pending_deletes|length }}): hidden now, removed by the next sync (within about 5 minutes).</p>
+      <ul>
+        {% for route_id in pending_deletes %}
+          <li class="flex items-center gap-3">
+            <span>{{ route_id }}</span>
+            <form method="post" action="{% url 'undo_delete' route_id %}" class="inline">
+              {% csrf_token %}
+              <button type="submit" class="text-blue-600 hover:underline">Undo</button>
+            </form>
+          </li>
+        {% endfor %}
+      </ul>
+    </div>
+  {% endif %}
   {% if show_preserved_only %}
     <a href="{% url 'drive_list' %}" class="px-3 py-1 bg-gray-200 rounded hover:bg-gray-300">Show All</a>
   {% else %}

@@ -105,7 +105,16 @@
     <p class="text-sm text-gray-600 mb-2">Share of the time openpilot was engaged (steering or speed) that the pilot, rather than the driver, was in control.</p>
     <div id="summary-bars" class="grid gap-4 sm:grid-cols-2 mb-4"></div>
     <div id="summary-charts" class="hidden">
-      <div class="relative h-56"><canvas id="summary-speed"></canvas></div>
+      <div class="flex flex-wrap items-center gap-2 mb-2">
+        <button type="button" id="summary-zoom-in" title="Zoom in" class="px-3 py-1 bg-gray-200 rounded hover:bg-gray-300">+</button>
+        <button type="button" id="summary-zoom-out" title="Zoom out" class="px-3 py-1 bg-gray-200 rounded hover:bg-gray-300">&minus;</button>
+        <button type="button" id="summary-pan-left" title="Earlier" class="px-3 py-1 bg-gray-200 rounded hover:bg-gray-300">&larr;</button>
+        <button type="button" id="summary-pan-right" title="Later" class="px-3 py-1 bg-gray-200 rounded hover:bg-gray-300">&rarr;</button>
+        <button type="button" id="summary-zoom-reset" class="px-3 py-1 bg-gray-200 rounded hover:bg-gray-300 text-sm">Show all</button>
+        <span id="summary-range" class="text-sm text-gray-600"></span>
+        <span class="text-xs text-gray-500 sm:ml-auto">Ctrl + scroll or pinch to zoom, drag to move</span>
+      </div>
+      <div class="relative h-56"><canvas id="summary-speed" style="touch-action: pan-y"></canvas></div>
       <div class="relative h-24"><canvas id="summary-strips"></canvas></div>
       <p class="text-xs text-gray-500 mt-1">Strips: green = pilot in control, orange = driver in control, grey = not engaged. Green shading behind the speed line = pilot controlling speed.</p>
     </div>
@@ -162,6 +171,10 @@
 </script>
 <script src="https://unpkg.com/chart.js@4.4.1/dist/chart.umd.js"
         integrity="sha256-dEAdc43T4D7l37O2hBIQ/ixOrYqWDEARykugt4qf2PM=" crossorigin=""></script>
+<script src="https://unpkg.com/hammerjs@2.0.8/hammer.min.js"
+        integrity="sha256-eVNjHw5UeU0jUqPPpZHAkU1z4U+QFBBY488WvueTm88=" crossorigin=""></script>
+<script src="https://unpkg.com/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"
+        integrity="sha256-UDxwmAK+KFxnav4Dab9fcgZtCwwjkpGIwxWPNcAyepw=" crossorigin=""></script>
 <script>
   (function () {
     var COLORS = {pilot: "#22c55e", driver: "#f97316"};
@@ -249,14 +262,27 @@
 
     function drawCharts(data) {
       if (typeof Chart === "undefined") return;
+      if (window.ChartZoom) {
+        try { Chart.register(window.ChartZoom); } catch (e) { /* already registered */ }
+      }
       var series = data.series, endMin = Math.max(series.t[series.t.length - 1] / 60, 1 / 60);
+      var MIN_RANGE = Math.min(10 / 60, endMin);  // minutes: do not zoom in past ~10 s
       var speedSpans = spans(series, "speed");
+      var speedChart, stripsChart;
+      var rangeLabel = document.getElementById("summary-range");
+
+      function clipToArea(ctx, a) {
+        ctx.beginPath();
+        ctx.rect(a.left, a.top, a.width, a.height);
+        ctx.clip();
+      }
 
       var shade = {
         id: "pilotSpeedShade",
         beforeDatasetsDraw: function (chart) {
           var a = chart.chartArea, ctx = chart.ctx, x = chart.scales.x;
           ctx.save();
+          clipToArea(ctx, a);
           ctx.fillStyle = "rgba(34, 197, 94, 0.15)";
           speedSpans.forEach(function (sp) {
             if (sp[2] !== 1) return;
@@ -286,7 +312,26 @@
         });
       });
 
-      new Chart(document.getElementById("summary-speed"), {
+      // The strips and the range label follow whatever time range the speed chart shows.
+      function sync() {
+        var x = speedChart.scales.x;
+        stripsChart.options.scales.x.min = x.min;
+        stripsChart.options.scales.x.max = x.max;
+        stripsChart.update("none");
+        rangeLabel.textContent = clock(x.min * 60) + " \u2013 " + clock(x.max * 60);
+      }
+
+      function setRange(min, max) {
+        var mid = (min + max) / 2;  // keep the centre when the range is clamped
+        var range = Math.min(Math.max(max - min, MIN_RANGE), endMin);
+        min = Math.min(Math.max(mid - range / 2, 0), endMin - range);
+        speedChart.options.scales.x.min = min;
+        speedChart.options.scales.x.max = min + range;
+        speedChart.update("none");
+        sync();
+      }
+
+      speedChart = new Chart(document.getElementById("summary-speed"), {
         type: "scatter", data: {datasets: datasets}, plugins: [shade],
         options: {
           responsive: true, maintainAspectRatio: false, animation: false,
@@ -301,7 +346,17 @@
               label: function (item) {
                 return item.dataset.label + (item.datasetIndex === 0 ? ": " + item.parsed.y + " mph" : "");
               }
-            }}
+            }},
+            zoom: {
+              limits: {x: {min: 0, max: endMin, minRange: MIN_RANGE}},
+              pan: {enabled: true, mode: "x", onPan: function () { sync(); }},
+              zoom: {
+                wheel: {enabled: true, modifierKey: "ctrl"},
+                pinch: {enabled: true},
+                mode: "x",
+                onZoom: function () { sync(); }
+              }
+            }
           }
         }
       });
@@ -318,6 +373,8 @@
           ctx.save();
           rows.forEach(function (row, i) {
             var top = a.top + i * rowH + 3, h = rowH - 6;
+            ctx.save();
+            clipToArea(ctx, a);
             ctx.fillStyle = "#d1d5db";
             ctx.fillRect(a.left, top, a.width, h);
             row.spans.forEach(function (sp) {
@@ -325,6 +382,7 @@
               var x0 = x.getPixelForValue(sp[0]), x1 = x.getPixelForValue(sp[1]);
               ctx.fillRect(x0, top, Math.max(x1 - x0, 1), h);
             });
+            ctx.restore();
             ctx.fillStyle = "#374151";
             ctx.font = "12px sans-serif";
             ctx.textAlign = "right";
@@ -334,7 +392,7 @@
           ctx.restore();
         }
       };
-      new Chart(document.getElementById("summary-strips"), {
+      stripsChart = new Chart(document.getElementById("summary-strips"), {
         type: "scatter", data: {datasets: []}, plugins: [strips],
         options: {
           responsive: true, maintainAspectRatio: false, animation: false,
@@ -345,6 +403,27 @@
           plugins: {legend: {display: false}, tooltip: {enabled: false}}
         }
       });
+
+      function view() {
+        var x = speedChart.scales.x;
+        return {min: x.min, max: x.max, range: x.max - x.min};
+      }
+      function click(id, fn) { document.getElementById(id).addEventListener("click", fn); }
+      click("summary-zoom-in", function () {
+        var v = view(), mid = (v.min + v.max) / 2;
+        setRange(mid - v.range / 4, mid + v.range / 4);
+      });
+      click("summary-zoom-out", function () {
+        var v = view(), mid = (v.min + v.max) / 2;
+        setRange(mid - v.range, mid + v.range);
+      });
+      click("summary-pan-left", function () { var v = view(); setRange(v.min - v.range / 4, v.max - v.range / 4); });
+      click("summary-pan-right", function () { var v = view(); setRange(v.min + v.range / 4, v.max + v.range / 4); });
+      click("summary-zoom-reset", function () {
+        if (speedChart.resetZoom) speedChart.resetZoom("none");
+        setRange(0, endMin);
+      });
+      sync();
     }
 
     function events(parent, data) {

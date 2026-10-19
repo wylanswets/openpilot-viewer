@@ -101,6 +101,20 @@ class DriveListCameraTests(TestCase):
             self.assertLess(html.index(f">{label}<"), panel)
         self.assertContains(response, reverse("drive_summary", args=["00000010--3333333333"]))
 
+    def test_summary_graph_has_zoom_controls_and_pinned_libraries(self):
+        self.make_drive("00000011--4444444444", ["fcamera"])
+        response = self.client.get(reverse("drive_detail", args=["00000011--4444444444"]))
+        for control in ("summary-zoom-in", "summary-zoom-out", "summary-pan-left",
+                        "summary-pan-right", "summary-zoom-reset", "summary-range"):
+            self.assertContains(response, f'id="{control}"')
+        # every script loaded from a CDN carries an integrity hash
+        html = response.content.decode()
+        libraries = ("leaflet", "chart.js", "hammerjs", "chartjs-plugin-zoom")
+        tags = [tag.split(">")[0] for tag in html.split("<script")[1:]]
+        for library in libraries:
+            (tag,) = [tag for tag in tags if f"unpkg.com/{library}" in tag]
+            self.assertIn("integrity=", tag)
+
     def test_no_stitched_path_line(self):
         self.make_drive("00000004--dddddddddd", ["fcamera"])
         response, _ = self.get_rows()

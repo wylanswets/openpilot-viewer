@@ -2,3 +2,4 @@ Django>=5.0
 gunicorn
 pycapnp
 zstandard
+Pillow

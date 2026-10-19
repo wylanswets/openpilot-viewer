@@ -83,6 +83,12 @@
               {% endfor %}
             </div>
 
+            {% if drive.thumbnail_url %}
+              <img src="{{ drive.thumbnail_url }}" alt="Map of the route" width="640" height="260"
+                   loading="lazy" class="w-full h-auto rounded-md mt-3">
+            {% elif drive.thumbnail_pending %}
+              <div class="thumbnail-pending" data-src="{% url 'drive_thumbnail' drive.route_id %}"></div>
+            {% endif %}
           </div>
         </a>
       {% endfor %}
@@ -102,4 +108,24 @@
     <p class="text-gray-500">No drives available.</p>
   {% endif %}
 </div>
+
+<script>
+  // Thumbnails are made in the background; look for the pending ones every few seconds
+  // for a while so they appear without reloading the page.
+  document.querySelectorAll(".thumbnail-pending").forEach(function (holder) {
+    function attempt(n) {
+      var img = new Image();
+      img.onload = function () {
+        img.width = 640;
+        img.height = 260;
+        img.className = "w-full h-auto rounded-md mt-3";
+        img.alt = "Map of the route";
+        holder.appendChild(img);
+      };
+      img.onerror = function () { if (n < 20) setTimeout(function () { attempt(n + 1); }, 8000); };
+      img.src = holder.dataset.src + "?t=" + Date.now();
+    }
+    setTimeout(function () { attempt(1); }, 4000);
+  });
+</script>
 {% endblock %}

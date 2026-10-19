@@ -60,6 +60,12 @@
     <a href="{% url 'drive_list' %}" class="text-blue-600 hover:underline">← Back to Drives</a>
   </div>
 
+  <!-- Route map (hidden until the track has GPS points) -->
+  <div id="route-map-section" class="bg-gray-100 rounded-xl shadow-md p-4 mb-6 hidden">
+    <h3 class="text-lg font-medium mb-2">Route</h3>
+    <div id="route-map" class="w-full h-96 rounded-md shadow-sm z-0"></div>
+  </div>
+
   <!-- Main video section (Front Camera) -->
   <div class="bg-gray-100 rounded-xl shadow-md p-4 mb-6">
     {% for video in drive.videos %}
@@ -71,12 +77,6 @@
         </video>
       {% endif %}
     {% endfor %}
-  </div>
-
-  <!-- Route map (hidden until the track has GPS points) -->
-  <div id="route-map-section" class="bg-gray-100 rounded-xl shadow-md p-4 mb-6 hidden">
-    <h3 class="text-lg font-medium mb-2">Route</h3>
-    <div id="route-map" class="w-full h-96 rounded-md shadow-sm z-0"></div>
   </div>
 
   <!-- Other cameras -->

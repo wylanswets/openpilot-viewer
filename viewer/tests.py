@@ -77,6 +77,14 @@ class DriveListCameraTests(TestCase):
         response = self.client.get(reverse("drive_detail", args=["00000006--ffffffffff"]))
         self.assertContains(response, 'referrerPolicy: "strict-origin-when-cross-origin"')
 
+    def test_route_map_comes_before_the_cameras(self):
+        self.make_drive("00000007--1111111111", ["fcamera", "ecamera"])
+        response = self.client.get(reverse("drive_detail", args=["00000007--1111111111"]))
+        html = response.content.decode()
+        map_at = html.index('id="route-map-section"')
+        self.assertLess(map_at, html.index("Front Camera"))
+        self.assertLess(map_at, html.index("Wide Camera"))
+
     def test_no_stitched_path_line(self):
         self.make_drive("00000004--dddddddddd", ["fcamera"])
         response, _ = self.get_rows()

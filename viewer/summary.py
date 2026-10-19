@@ -15,7 +15,7 @@ from .qlogs import cached_segments, read_events
 CACHE_VERSION = 1
 SEGMENT_SECONDS = 60
 SAMPLE_CAP_S = 0.5  # a logging gap is not counted as driving time
-GAP_S = 1.5  # series points further apart than this are drawn as a break
+GAP_S = 5.0  # series points further apart than this are drawn as a break (segments start ~1 s late)
 M_S_TO_MPH = 2.2369363
 METERS_PER_MILE = 1609.344
 
@@ -30,8 +30,9 @@ ONROAD_EVENTS = {
     "driverDistracted3": "driver_distracted",
     "laneChange": "lane_change",
 }
-# minimum seconds between two events of the same type (escalating warnings are one incident)
-MIN_GAP_S = {"driver_distracted": 10.0}
+# Minimum seconds between two events of the same type: light touches of the wheel or a
+# pedal flicker, and escalating warnings are one incident, so they count as one episode.
+MIN_GAP_S = {"wheel_override": 5.0, "pedal_override": 3.0, "driver_distracted": 10.0}
 DEFAULT_MIN_GAP_S = 1.0
 
 INTERRUPTION_TYPES = ("wheel_override", "pedal_override", "steer_off", "speed_off")
@@ -179,7 +180,7 @@ def route_summary(route_id, raw_dir, cache_dir):
         "segments": len(segments),
         "duration_s": round(total["dur"]),
         "engaged_s": round(engaged),
-        "distance_mi": round(total["dist"] / METERS_PER_MILE, 1),
+        "distance_mi": round(total["dist"] / METERS_PER_MILE, 2),
         "avg_mph": round(total["dist"] / total["dur"] * M_S_TO_MPH, 1) if total["dur"] else 0.0,
         "max_mph": round(vmax * M_S_TO_MPH, 1),
         "steer_pilot_pct": _share(total["steer_pilot"], engaged),

@@ -299,7 +299,7 @@ class DriveSummaryTests(TestCase):
     def test_speed_and_distance(self):
         self.segment(0, run(0, 10, v=20.0) + run(10, 1, v=25.0))
         s = self.summary()
-        self.assertAlmostEqual(s["distance_mi"], (200 + 25) / 1609.344, delta=0.02)
+        self.assertAlmostEqual(s["distance_mi"], (200 + 25) / 1609.344, delta=0.006)
         self.assertEqual(s["max_mph"], round(25 * 2.2369363, 1))
         self.assertAlmostEqual(s["avg_mph"], 20.5 * 2.2369363, delta=2)
 
@@ -318,6 +318,26 @@ class DriveSummaryTests(TestCase):
         self.assertEqual(counts["speed_off"], 1)
         self.assertEqual(counts["steer_off"], 1)
         self.assertEqual(self.summary()["interruptions"], 4)
+
+    def test_flickering_wheel_or_pedal_presses_count_as_one_episode(self):
+        self.segment(0, (
+            run(0, 2, lat=True, long_=True)
+            + run(2, 0.5, lat=True, long_=True, wheel=True, gas=True)
+            + run(2.5, 0.5, lat=True, long_=True)
+            + run(3, 0.5, lat=True, long_=True, wheel=True, gas=True)
+            + run(3.5, 0.5, lat=True, long_=True)
+            + run(4, 0.5, lat=True, long_=True, wheel=True, gas=True)
+            + run(4.5, 10, lat=True, long_=True)
+            + run(14.5, 0.5, lat=True, long_=True, wheel=True)   # well after: a new episode
+        ))
+        counts = self.summary()["counts"]
+        self.assertEqual(counts["wheel_override"], 2)
+        self.assertEqual(counts["pedal_override"], 1)
+
+    def test_a_short_gap_between_segments_does_not_break_the_line(self):
+        self.segment(0, run(1, 58, lat=True))      # a segment starts ~1 s late
+        self.segment(1, run(1, 58, lat=True))
+        self.assertNotIn(None, self.summary()["series"]["mph"])
 
     def test_onroad_events_are_reported_when_they_start(self):
         self.segment(0, run(0, 10, lat=True), onroad=[
@@ -342,12 +362,12 @@ class DriveSummaryTests(TestCase):
 
     def test_segments_are_merged_with_offsets_and_gaps(self):
         self.segment(0, run(0, 5, lat=True, long_=True))
-        self.segment(2, run(0, 5, lat=True, long_=True, wheel=True))
+        self.segment(2, run(0, 2, lat=True, long_=True) + run(2, 3, lat=True, long_=True, wheel=True))
         s = self.summary()
         self.assertEqual(s["segments"], 2)
         self.assertAlmostEqual(s["engaged_s"], 10, delta=1)
         self.assertEqual(s["events"][0][1], "wheel_override")
-        self.assertAlmostEqual(s["events"][0][0], 120, delta=1)  # segment 2 starts at 120 s
+        self.assertAlmostEqual(s["events"][0][0], 122, delta=1)  # segment 2 starts at 120 s
         series = s["series"]
         self.assertEqual(len(series["t"]), len(series["mph"]))
         self.assertIn(None, series["mph"])  # the missing segment 1 breaks the line

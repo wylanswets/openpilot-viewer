@@ -14,6 +14,8 @@ LOCAL_STITCHED="/data/stitched"
 LOG_FILE="/data/logs/c3x_sync.log"
 DELETED_FILE="/data/logs/deleted_routes.txt"
 SSH_OPTS="-i $SSH_KEY -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$KNOWN_HOSTS -o BatchMode=yes"
+# Keep partial files so a dropped connection resumes instead of restarting big files.
+RSYNC_RESUME="--partial --timeout=120"
 touch "$DELETED_FILE"
 
 MIN_FREE_GB=75
@@ -118,7 +120,7 @@ log "Syncing logs first..."
 rsync -rtp \
   --chmod=Du=rwx,Dg=rws,Do=rx,Fu=rw,Fg=rw,Fo=r \
   --info=stats2,flist0,progress2 \
-  --no-i-r \
+  --no-i-r $RSYNC_RESUME \
   --prune-empty-dirs \
   -e "ssh $SSH_OPTS" \
   --exclude-from="$RSYNC_EXCLUDES" \
@@ -133,7 +135,7 @@ log "Syncing video segments..."
 rsync -rtp \
   --chmod=Du=rwx,Dg=rws,Do=rx,Fu=rw,Fg=rw,Fo=r \
   --info=stats2,flist0,progress2 \
-  --no-i-r \
+  --no-i-r $RSYNC_RESUME \
   --ignore-existing \
   --prune-empty-dirs \
   -e "ssh $SSH_OPTS" \

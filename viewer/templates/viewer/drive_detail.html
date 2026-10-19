@@ -97,6 +97,20 @@
       {% endif %}
     {% endfor %}
   </div>
+
+  <!-- Drive summary (hidden until the summary has data) -->
+  <div id="summary-section" class="bg-gray-100 rounded-xl shadow-md p-4 mt-6 hidden">
+    <h3 class="text-lg font-medium mb-3">Drive summary</h3>
+    <div id="summary-numbers" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-4"></div>
+    <p class="text-sm text-gray-600 mb-2">Share of the time openpilot was engaged (steering or speed) that the pilot, rather than the driver, was in control.</p>
+    <div id="summary-bars" class="grid gap-4 sm:grid-cols-2 mb-4"></div>
+    <div id="summary-charts" class="hidden">
+      <div class="relative h-56"><canvas id="summary-speed"></canvas></div>
+      <div class="relative h-24"><canvas id="summary-strips"></canvas></div>
+      <p class="text-xs text-gray-500 mt-1">Strips: green = pilot in control, orange = driver in control, grey = not engaged. Green shading behind the speed line = pilot controlling speed.</p>
+    </div>
+    <div id="summary-events" class="mt-4"></div>
+  </div>
 </div>
 
 <!-- Leaflet + OpenStreetMap tiles; the browser loads these from the internet -->
@@ -145,5 +159,236 @@
         }
       });
     });
+</script>
+<script src="https://unpkg.com/chart.js@4.4.1/dist/chart.umd.js"
+        integrity="sha256-dEAdc43T4D7l37O2hBIQ/ixOrYqWDEARykugt4qf2PM=" crossorigin=""></script>
+<script>
+  (function () {
+    var COLORS = {pilot: "#22c55e", driver: "#f97316"};
+    var EVENT_LABELS = {
+      wheel_override: "Driver pushed the wheel",
+      pedal_override: "Driver pressed gas or brake",
+      steer_off: "Steering turned off",
+      speed_off: "Speed control turned off",
+      steer_saturated: "Turn too tight for the system",
+      driver_distracted: "Driver distraction warning",
+      lane_change: "Lane change"
+    };
+    var EVENT_COLORS = {
+      wheel_override: "#f97316", pedal_override: "#eab308", steer_off: "#ef4444",
+      speed_off: "#b91c1c", steer_saturated: "#7c3aed", driver_distracted: "#db2777",
+      lane_change: "#0d9488"
+    };
+    var INTERRUPTIONS = ["wheel_override", "pedal_override", "steer_off", "speed_off"];
+    var AXIS_WIDTH = 70;  // both charts use the same y-axis width so their time axes line up
+
+    function el(tag, cls, text) {
+      var node = document.createElement(tag);
+      if (cls) node.className = cls;
+      if (text !== undefined) node.textContent = text;
+      return node;
+    }
+
+    function clock(seconds) {
+      seconds = Math.round(seconds);
+      var h = Math.floor(seconds / 3600), m = Math.floor(seconds % 3600 / 60), s = seconds % 60;
+      var mm = h ? String(m).padStart(2, "0") : String(m);
+      return (h ? h + ":" : "") + mm + ":" + String(s).padStart(2, "0");
+    }
+
+    function number(parent, label, value) {
+      var box = el("div", "bg-white rounded-lg shadow-sm p-3");
+      box.appendChild(el("div", "text-xs text-gray-500", label));
+      box.appendChild(el("div", "text-lg font-semibold", value));
+      parent.appendChild(box);
+    }
+
+    function bar(parent, title, pilotPct, driverPct) {
+      var box = el("div");
+      box.appendChild(el("div", "text-sm font-medium mb-1", title));
+      if (pilotPct === null) {
+        box.appendChild(el("div", "text-sm text-gray-500", "Not engaged on this drive"));
+      } else {
+        var track = el("div", "flex w-full h-7 rounded overflow-hidden text-xs text-white font-medium");
+        [["Pilot", pilotPct, COLORS.pilot], ["Driver", driverPct, COLORS.driver]].forEach(function (part) {
+          var seg = el("div", "flex items-center justify-center", part[1] >= 12 ? part[0] + " " + part[1].toFixed(1) + "%" : "");
+          seg.style.width = part[1] + "%";
+          seg.style.background = part[2];
+          seg.title = part[0] + " " + part[1].toFixed(1) + "%";
+          track.appendChild(seg);
+        });
+        box.appendChild(track);
+      }
+      parent.appendChild(box);
+    }
+
+    // Runs of the same pilot/driver code, in minutes; samples cover one second each.
+    function spans(series, key) {
+      var out = [], t = series.t, codes = series[key], last = null;
+      for (var i = 0; i < t.length; i++) {
+        var code = series.mph[i] === null ? 0 : codes[i];
+        if (!code) { last = null; continue; }
+        var from = t[i] / 60, to = (t[i] + 1) / 60;
+        if (last && last[2] === code && from - last[1] < 1e-6) { last[1] = to; }
+        else { last = [from, to, code]; out.push(last); }
+      }
+      return out;
+    }
+
+    function speedAt(series, second) {
+      var lo = 0, hi = series.t.length - 1;
+      while (lo < hi) {
+        var mid = (lo + hi) >> 1;
+        if (series.t[mid] < second) lo = mid + 1; else hi = mid;
+      }
+      var v = series.mph[lo];
+      return v === null ? 0 : v;
+    }
+
+    function fixedAxis(scale) { scale.width = AXIS_WIDTH; }
+
+    function drawCharts(data) {
+      if (typeof Chart === "undefined") return;
+      var series = data.series, endMin = Math.max(series.t[series.t.length - 1] / 60, 1 / 60);
+      var speedSpans = spans(series, "speed");
+
+      var shade = {
+        id: "pilotSpeedShade",
+        beforeDatasetsDraw: function (chart) {
+          var a = chart.chartArea, ctx = chart.ctx, x = chart.scales.x;
+          ctx.save();
+          ctx.fillStyle = "rgba(34, 197, 94, 0.15)";
+          speedSpans.forEach(function (sp) {
+            if (sp[2] !== 1) return;
+            var x0 = x.getPixelForValue(sp[0]), x1 = x.getPixelForValue(sp[1]);
+            ctx.fillRect(x0, a.top, Math.max(x1 - x0, 1), a.height);
+          });
+          ctx.restore();
+        }
+      };
+
+      var datasets = [{
+        label: "Speed (mph)",
+        data: series.t.map(function (t, i) { return {x: t / 60, y: series.mph[i]}; }),
+        showLine: true, spanGaps: false, pointRadius: 0, borderWidth: 2,
+        borderColor: "#2563eb", backgroundColor: "#2563eb"
+      }];
+      var byType = {};
+      data.events.forEach(function (ev) {
+        (byType[ev[1]] = byType[ev[1]] || []).push({x: ev[0] / 60, y: speedAt(series, ev[0]), at: ev[0]});
+      });
+      Object.keys(EVENT_LABELS).forEach(function (type) {
+        if (!byType[type]) return;
+        datasets.push({
+          label: EVENT_LABELS[type], data: byType[type], showLine: false,
+          pointStyle: "triangle", pointRadius: 6, pointHoverRadius: 8,
+          backgroundColor: EVENT_COLORS[type], borderColor: "#ffffff", borderWidth: 1
+        });
+      });
+
+      new Chart(document.getElementById("summary-speed"), {
+        type: "scatter", data: {datasets: datasets}, plugins: [shade],
+        options: {
+          responsive: true, maintainAspectRatio: false, animation: false,
+          scales: {
+            x: {type: "linear", min: 0, max: endMin, title: {display: true, text: "Minutes into drive"}},
+            y: {beginAtZero: true, title: {display: true, text: "mph"}, afterFit: fixedAxis}
+          },
+          plugins: {
+            legend: {position: "bottom"},
+            tooltip: {callbacks: {
+              title: function (items) { return clock(items[0].parsed.x * 60); },
+              label: function (item) {
+                return item.dataset.label + (item.datasetIndex === 0 ? ": " + item.parsed.y + " mph" : "");
+              }
+            }}
+          }
+        }
+      });
+
+      var rows = [
+        {label: "Steering", spans: spans(series, "steer")},
+        {label: "Speed", spans: speedSpans}
+      ];
+      var strips = {
+        id: "strips",
+        beforeDraw: function (chart) {
+          var a = chart.chartArea, ctx = chart.ctx, x = chart.scales.x;
+          var rowH = a.height / rows.length;
+          ctx.save();
+          rows.forEach(function (row, i) {
+            var top = a.top + i * rowH + 3, h = rowH - 6;
+            ctx.fillStyle = "#d1d5db";
+            ctx.fillRect(a.left, top, a.width, h);
+            row.spans.forEach(function (sp) {
+              ctx.fillStyle = sp[2] === 1 ? COLORS.pilot : COLORS.driver;
+              var x0 = x.getPixelForValue(sp[0]), x1 = x.getPixelForValue(sp[1]);
+              ctx.fillRect(x0, top, Math.max(x1 - x0, 1), h);
+            });
+            ctx.fillStyle = "#374151";
+            ctx.font = "12px sans-serif";
+            ctx.textAlign = "right";
+            ctx.textBaseline = "middle";
+            ctx.fillText(row.label, a.left - 8, top + h / 2);
+          });
+          ctx.restore();
+        }
+      };
+      new Chart(document.getElementById("summary-strips"), {
+        type: "scatter", data: {datasets: []}, plugins: [strips],
+        options: {
+          responsive: true, maintainAspectRatio: false, animation: false,
+          scales: {
+            x: {type: "linear", min: 0, max: endMin, ticks: {display: false}, grid: {display: false}},
+            y: {min: 0, max: 1, ticks: {display: false}, grid: {display: false}, border: {display: false}, afterFit: fixedAxis}
+          },
+          plugins: {legend: {display: false}, tooltip: {enabled: false}}
+        }
+      });
+    }
+
+    function events(parent, data) {
+      var counts = data.counts, times = {};
+      data.events.forEach(function (ev) { (times[ev[1]] = times[ev[1]] || []).push(clock(ev[0])); });
+      parent.appendChild(el("h4", "text-md font-medium mb-1", "Interruptions: " + data.interruptions));
+      var any = false;
+      function group(type) {
+        if (!counts[type]) return;
+        any = true;
+        var d = el("details", "bg-white rounded-lg shadow-sm px-3 py-2 mb-1");
+        d.appendChild(el("summary", "cursor-pointer text-sm", EVENT_LABELS[type] + ": " + counts[type]));
+        d.appendChild(el("p", "text-xs text-gray-600 mt-1", times[type].join(", ")));
+        parent.appendChild(d);
+      }
+      INTERRUPTIONS.forEach(group);
+      if (!data.interruptions) parent.appendChild(el("p", "text-sm text-gray-500 mb-1", "None recorded."));
+      parent.appendChild(el("h4", "text-md font-medium mt-3 mb-1", "Other events"));
+      var before = parent.children.length;
+      Object.keys(EVENT_LABELS).filter(function (t) { return INTERRUPTIONS.indexOf(t) < 0; }).forEach(group);
+      if (parent.children.length === before) parent.appendChild(el("p", "text-sm text-gray-500", "None recorded."));
+    }
+
+    fetch("{% url 'drive_summary' drive.route_id %}")
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (data) {
+        if (!data || !data.duration_s) return;
+        document.getElementById("summary-section").classList.remove("hidden");
+        var nums = document.getElementById("summary-numbers");
+        number(nums, "Duration", clock(data.duration_s));
+        number(nums, "Distance", data.distance_mi.toFixed(1) + " mi");
+        number(nums, "Average speed", data.avg_mph.toFixed(1) + " mph");
+        number(nums, "Top speed", data.max_mph.toFixed(1) + " mph");
+        number(nums, "Engaged", clock(data.engaged_s) + " (" + Math.round(100 * data.engaged_s / data.duration_s) + "%)");
+        number(nums, "Interruptions", String(data.interruptions));
+        var bars = document.getElementById("summary-bars");
+        bar(bars, "Steering", data.steer_pilot_pct, data.steer_driver_pct);
+        bar(bars, "Speed", data.speed_pilot_pct, data.speed_driver_pct);
+        if (data.series.t.length) {
+          document.getElementById("summary-charts").classList.remove("hidden");
+          drawCharts(data);
+        }
+        events(document.getElementById("summary-events"), data);
+      });
+  })();
 </script>
 {% endblock %}

@@ -92,6 +92,15 @@ class DriveListCameraTests(TestCase):
         self.assertContains(response, 'id="route-map" class="w-full h-96')
         self.assertContains(response, 'mapEl.style.height = enlarged ? "85vh" : ""')
 
+    def test_summary_panel_is_below_all_the_cameras(self):
+        self.make_drive("00000010--3333333333", ["fcamera", "ecamera", "dcamera"])
+        response = self.client.get(reverse("drive_detail", args=["00000010--3333333333"]))
+        html = response.content.decode()
+        panel = html.index('id="summary-section"')
+        for label in ("Front Camera", "Wide Camera", "Driver Camera"):
+            self.assertLess(html.index(f">{label}<"), panel)
+        self.assertContains(response, reverse("drive_summary", args=["00000010--3333333333"]))
+
     def test_no_stitched_path_line(self):
         self.make_drive("00000004--dddddddddd", ["fcamera"])
         response, _ = self.get_rows()

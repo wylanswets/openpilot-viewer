@@ -4,22 +4,25 @@
 set -euo pipefail
 
 # Configuration
-C3X_IP="192.168.108.96"
-C3X_USER="comma"
-SSH_KEY="/keys/openpilot_sync_ed25519"
-KNOWN_HOSTS="/app/ssh/known_hosts"
-REMOTE_DRIVES="/data/media/0/realdata"
-LOCAL_RAW="/data/raw"
-LOCAL_STITCHED="/data/stitched"
-LOG_FILE="/data/logs/c3x_sync.log"
-DELETED_FILE="/data/logs/deleted_routes.txt"
-METADATA_DIR="/data/metadata"
+# Every setting can be overridden with an environment variable of the same name; the
+# defaults are the container's mounts. DEVICE_IP has no default: set it to the address of
+# the device (see sync/README.md).
+DEVICE_IP="${DEVICE_IP:?set DEVICE_IP to the address of the device}"
+DEVICE_USER="${DEVICE_USER:-comma}"
+SSH_KEY="${SSH_KEY:-/keys/openpilot_sync_ed25519}"
+KNOWN_HOSTS="${KNOWN_HOSTS:-/app/ssh/known_hosts}"
+REMOTE_DRIVES="${REMOTE_DRIVES:-/data/media/0/realdata}"
+LOCAL_RAW="${LOCAL_RAW:-/data/raw}"
+LOCAL_STITCHED="${LOCAL_STITCHED:-/data/stitched}"
+LOG_FILE="${LOG_FILE:-/data/logs/device_sync.log}"
+DELETED_FILE="${DELETED_FILE:-/data/logs/deleted_routes.txt}"
+METADATA_DIR="${METADATA_DIR:-/data/metadata}"
 SSH_OPTS="-i $SSH_KEY -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$KNOWN_HOSTS -o BatchMode=yes"
 # Keep partial files so a dropped connection resumes instead of restarting big files.
 RSYNC_RESUME="--partial --timeout=120"
 touch "$DELETED_FILE"
 
-MIN_FREE_GB=75
+MIN_FREE_GB="${MIN_FREE_GB:-75}"
 # End Configuration
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" | tee -a "$LOG_FILE" || true; }
@@ -41,8 +44,8 @@ source "$(dirname "$0")/delete_lib.sh"
 process_delete_requests
 
 # ping device ip to check if online or not
-if ! ping -c 1 -W 2 "$C3X_IP" >/dev/null 2>&1; then
-    log "C3X not reachable at $C3X_IP"
+if ! ping -c 1 -W 2 "$DEVICE_IP" >/dev/null 2>&1; then
+    log "Device not reachable at $DEVICE_IP"
     exit 0
 fi
 
@@ -89,7 +92,7 @@ rsync -rtp \
   --include="*.ts" \
   --exclude="*.hevc" \
   --exclude="*" \
-  "$C3X_USER@$C3X_IP:$REMOTE_DRIVES/" "$LOCAL_RAW/" | tee -a "$LOG_FILE"
+  "$DEVICE_USER@$DEVICE_IP:$REMOTE_DRIVES/" "$LOCAL_RAW/" | tee -a "$LOG_FILE"
 
 log "Syncing video segments..."
 rsync -rtp \
@@ -100,7 +103,7 @@ rsync -rtp \
   --prune-empty-dirs \
   -e "ssh $SSH_OPTS" \
   --exclude-from="$RSYNC_EXCLUDES" \
-  "$C3X_USER@$C3X_IP:$REMOTE_DRIVES/" "$LOCAL_RAW/" | tee -a "$LOG_FILE"
+  "$DEVICE_USER@$DEVICE_IP:$REMOTE_DRIVES/" "$LOCAL_RAW/" | tee -a "$LOG_FILE"
 
 # stitch together the drive videos into one video file per camera
 routes=$(find "$LOCAL_RAW" -mindepth 1 -maxdepth 1 -type d \
@@ -111,7 +114,7 @@ routes=$(find "$LOCAL_RAW" -mindepth 1 -maxdepth 1 -type d \
          | sort -u)
 
 # ask the device whether it is driving; if we can't tell, assume it is (safer)
-device_onroad=$(ssh $SSH_OPTS "$C3X_USER@$C3X_IP" 'cat /data/params/d/IsOnroad' 2>/dev/null || echo 1)
+device_onroad=$(ssh $SSH_OPTS "$DEVICE_USER@$DEVICE_IP" 'cat /data/params/d/IsOnroad' 2>/dev/null || echo 1)
 newest_route=$(echo "$routes" | tail -n1)
 for route_id in $routes; do
     stitched_path="$LOCAL_STITCHED/$route_id"

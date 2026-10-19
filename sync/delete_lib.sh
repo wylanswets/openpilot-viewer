@@ -1,5 +1,5 @@
 #!/bin/bash
-# Route deletion for the sync. Sourced by c3x_sync.sh (and by test_delete_lib.sh).
+# Route deletion for the sync. Sourced by device_sync.sh (and by test_delete_lib.sh).
 #
 # Needs: LOCAL_RAW LOCAL_STITCHED DELETED_FILE METADATA_DIR LOG_FILE MIN_FREE_GB,
 # and the functions log() and check_space().

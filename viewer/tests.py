@@ -70,6 +70,13 @@ class DriveListCameraTests(TestCase):
         _, drives = self.get_rows()
         self.assertEqual(drives[0]["thumbnails"], [])
 
+    def test_map_tiles_are_requested_with_a_referrer(self):
+        # OpenStreetMap blocks tile requests that carry no Referer, and Django's
+        # default Referrer-Policy removes it for cross-origin requests.
+        self.make_drive("00000006--ffffffffff", ["fcamera"])
+        response = self.client.get(reverse("drive_detail", args=["00000006--ffffffffff"]))
+        self.assertContains(response, 'referrerPolicy: "strict-origin-when-cross-origin"')
+
     def test_no_stitched_path_line(self):
         self.make_drive("00000004--dddddddddd", ["fcamera"])
         response, _ = self.get_rows()

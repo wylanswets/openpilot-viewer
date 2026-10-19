@@ -109,6 +109,9 @@
       var map = L.map("route-map");
       L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
         maxZoom: 19,
+        // Django's default Referrer-Policy (same-origin) strips the Referer, and
+        // tile.openstreetmap.org answers requests without one with an "Access blocked" tile.
+        referrerPolicy: "strict-origin-when-cross-origin",
         attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
       }).addTo(map);
       var bounds = L.latLngBounds([]);

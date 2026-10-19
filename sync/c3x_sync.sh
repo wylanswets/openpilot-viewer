@@ -1,15 +1,19 @@
 #!/bin/bash
+# Adapted from bryangerlach/openpilot-viewer c3x_sync.sh (MIT). Paths and key
+# point at the container mounts. Changes: config block, known_hosts, ssh options.
 set -euo pipefail
 
 # Configuration
-C3X_IP="192.168.86.85"
+C3X_IP="192.168.108.96"
 C3X_USER="comma"
-SSH_KEY="~/.ssh/opensshkey"
+SSH_KEY="/keys/openpilot_sync_ed25519"
+KNOWN_HOSTS="/app/ssh/known_hosts"
 REMOTE_DRIVES="/data/media/0/realdata"
-LOCAL_RAW="/srv/dev-disk-by-uuid-b502f01f-739c-464b-8f02-8037fe760b79/openpilot_data/raw"
-LOCAL_STITCHED="/srv/dev-disk-by-uuid-b502f01f-739c-464b-8f02-8037fe760b79/openpilot_data/stitched"
-LOG_FILE="/srv/dev-disk-by-uuid-b502f01f-739c-464b-8f02-8037fe760b79/openpilot_data/logs/c3x_sync.log"
-DELETED_FILE="/srv/dev-disk-by-uuid-b502f01f-739c-464b-8f02-8037fe760b79/openpilot_data/deleted_routes.txt"
+LOCAL_RAW="/data/raw"
+LOCAL_STITCHED="/data/stitched"
+LOG_FILE="/data/logs/c3x_sync.log"
+DELETED_FILE="/data/logs/deleted_routes.txt"
+SSH_OPTS="-i $SSH_KEY -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$KNOWN_HOSTS -o BatchMode=yes"
 touch "$DELETED_FILE"
 
 MIN_FREE_GB=75
@@ -116,7 +120,7 @@ rsync -rtp \
   --info=stats2,flist0,progress2 \
   --no-i-r \
   --prune-empty-dirs \
-  -e "ssh -i $SSH_KEY" \
+  -e "ssh $SSH_OPTS" \
   --exclude-from="$RSYNC_EXCLUDES" \
   --include="*/" \
   --include="*.zst" \
@@ -132,7 +136,7 @@ rsync -rtp \
   --no-i-r \
   --ignore-existing \
   --prune-empty-dirs \
-  -e "ssh -i $SSH_KEY" \
+  -e "ssh $SSH_OPTS" \
   --exclude-from="$RSYNC_EXCLUDES" \
   "$C3X_USER@$C3X_IP:$REMOTE_DRIVES/" "$LOCAL_RAW/" | tee -a "$LOG_FILE"
 

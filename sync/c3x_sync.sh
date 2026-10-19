@@ -4,21 +4,24 @@
 set -euo pipefail
 
 # Configuration
-C3X_IP="192.168.108.96"
-C3X_USER="comma"
-SSH_KEY="/keys/openpilot_sync_ed25519"
-KNOWN_HOSTS="/app/ssh/known_hosts"
-REMOTE_DRIVES="/data/media/0/realdata"
-LOCAL_RAW="/data/raw"
-LOCAL_STITCHED="/data/stitched"
-LOG_FILE="/data/logs/c3x_sync.log"
-DELETED_FILE="/data/logs/deleted_routes.txt"
+# Every setting can be overridden with an environment variable of the same name; the
+# defaults are the container's mounts. C3X_IP has no default: set it to the address of
+# the device (see sync/README.md).
+C3X_IP="${C3X_IP:?set C3X_IP to the address of the device}"
+C3X_USER="${C3X_USER:-comma}"
+SSH_KEY="${SSH_KEY:-/keys/openpilot_sync_ed25519}"
+KNOWN_HOSTS="${KNOWN_HOSTS:-/app/ssh/known_hosts}"
+REMOTE_DRIVES="${REMOTE_DRIVES:-/data/media/0/realdata}"
+LOCAL_RAW="${LOCAL_RAW:-/data/raw}"
+LOCAL_STITCHED="${LOCAL_STITCHED:-/data/stitched}"
+LOG_FILE="${LOG_FILE:-/data/logs/c3x_sync.log}"
+DELETED_FILE="${DELETED_FILE:-/data/logs/deleted_routes.txt}"
 SSH_OPTS="-i $SSH_KEY -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$KNOWN_HOSTS -o BatchMode=yes"
 # Keep partial files so a dropped connection resumes instead of restarting big files.
 RSYNC_RESUME="--partial --timeout=120"
 touch "$DELETED_FILE"
 
-MIN_FREE_GB=75
+MIN_FREE_GB="${MIN_FREE_GB:-75}"
 # End Configuration
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" | tee -a "$LOG_FILE" || true; }

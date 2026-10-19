@@ -85,6 +85,13 @@ class DriveListCameraTests(TestCase):
         self.assertLess(map_at, html.index("Front Camera"))
         self.assertLess(map_at, html.index("Wide Camera"))
 
+    def test_route_map_has_an_enlarge_button_and_starts_at_normal_height(self):
+        self.make_drive("00000008--2222222222", ["fcamera"])
+        response = self.client.get(reverse("drive_detail", args=["00000008--2222222222"]))
+        self.assertContains(response, 'id="route-map-resize"')
+        self.assertContains(response, 'id="route-map" class="w-full h-96')
+        self.assertContains(response, 'mapEl.style.height = enlarged ? "85vh" : ""')
+
     def test_no_stitched_path_line(self):
         self.make_drive("00000004--dddddddddd", ["fcamera"])
         response, _ = self.get_rows()

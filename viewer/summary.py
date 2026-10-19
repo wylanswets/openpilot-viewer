@@ -12,7 +12,7 @@ from pathlib import Path
 
 from .qlogs import cached_segments, read_events
 
-CACHE_VERSION = 1
+CACHE_VERSION = 2  # bump whenever parse_segment's output or logic changes
 SEGMENT_SECONDS = 60
 SAMPLE_CAP_S = 0.5  # a logging gap is not counted as driving time
 GAP_S = 5.0  # series points further apart than this are drawn as a break (segments start ~1 s late)
@@ -43,12 +43,9 @@ def parse_segment(qlog_path):
     samples = []  # (mono, vEgo, wheel, gas, brake, lat, long)
     onroad = []  # (mono, set of event names)
     lat = long_ = False
-    first_mono = None
 
     for event in read_events(qlog_path):
         mono = event.logMonoTime
-        if first_mono is None or mono < first_mono:
-            first_mono = mono
         kind = event.which()
         if kind == "carControl":
             lat, long_ = event.carControl.latActive, event.carControl.longActive
@@ -65,8 +62,12 @@ def parse_segment(qlog_path):
     if not samples:
         return summary
 
+    # Times run from the first carState sample. The earliest event in a qlog cannot be
+    # used: the header events (initData, carParams...) keep their original timestamps.
+    first_mono = samples[0][0]
+
     def seconds(mono):
-        return (mono - first_mono) / 1e9
+        return max((mono - first_mono) / 1e9, 0.0)
 
     last_event = {}
     events = []

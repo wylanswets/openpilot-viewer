@@ -197,7 +197,7 @@ class RouteTrackTests(TestCase):
         self.assertEqual(response.status_code, 404)
 
 
-def write_drive_qlog(path, samples, onroad=()):
+def write_drive_qlog(path, samples, onroad=(), stale_header=False):
     """Write a qlog.zst from 10 Hz drive samples and onroadEvents.
 
     samples: (t_seconds, v_m_s, wheel, gas, brake, lat, long) per carState/carControl.
@@ -220,6 +220,11 @@ def write_drive_qlog(path, samples, onroad=()):
         cs = state.init("carState")
         cs.vEgo, cs.steeringPressed, cs.gasPressed, cs.brakePressed = v, wheel, gas, brake
         chunks.append(state.to_bytes())
+    if stale_header:
+        # qlog headers (initData, ...) keep the timestamp from when the route began
+        header = schema.Event.new_message(logMonoTime=1)
+        header.init("initData")
+        chunks.insert(0, header.to_bytes())
     for t, names in onroad:
         event = message(t)
         listing = event.init("onroadEvents", len(names))
@@ -251,8 +256,10 @@ class DriveSummaryTests(TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def segment(self, number, samples, onroad=()):
-        write_drive_qlog(self.raw / f"{self.ROUTE}--{number}" / "qlog.zst", samples, onroad)
+    def segment(self, number, samples, onroad=(), stale_header=False):
+        write_drive_qlog(
+            self.raw / f"{self.ROUTE}--{number}" / "qlog.zst", samples, onroad, stale_header
+        )
 
     def summary(self):
         return summary.route_summary(self.ROUTE, self.raw, self.cache)
@@ -333,6 +340,15 @@ class DriveSummaryTests(TestCase):
         counts = self.summary()["counts"]
         self.assertEqual(counts["wheel_override"], 2)
         self.assertEqual(counts["pedal_override"], 1)
+
+    def test_old_header_timestamps_do_not_shift_the_time_axis(self):
+        # carState samples start at mono 1000 s; a header event is stamped long before
+        self.segment(0, run(1000, 58, lat=True), stale_header=True)
+        self.segment(1, run(2000, 5, lat=True) + run(2005, 2, lat=True, wheel=True), stale_header=True)
+        s = self.summary()
+        self.assertEqual(s["series"]["t"][0], 0)
+        self.assertNotIn(None, s["series"]["mph"])
+        self.assertAlmostEqual(s["events"][0][0], 65, delta=1)  # 5 s into segment 1
 
     def test_a_short_gap_between_segments_does_not_break_the_line(self):
         self.segment(0, run(1, 58, lat=True))      # a segment starts ~1 s late

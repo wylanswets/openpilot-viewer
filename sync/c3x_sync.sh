@@ -150,11 +150,19 @@ routes=$(find "$LOCAL_RAW" -mindepth 1 -maxdepth 1 -type d \
          | awk -F'--' '{print $1"--"$2}' \
          | sort -u)
 
+newest_route=$(echo "$routes" | tail -n1)
 for route_id in $routes; do
     stitched_path="$LOCAL_STITCHED/$route_id"
-    [ -d "$stitched_path" ] && continue
+    # .done is written only after every camera succeeds, so a failed route is retried
+    [ -f "$stitched_path/.done" ] && continue
+    # the device numbers routes in order, so the last one may still be recording
+    if [ "$route_id" = "$newest_route" ]; then
+        log "Route $route_id is the newest on the device, stitching later"
+        continue
+    fi
     mkdir -p -m 2775 "$stitched_path"
     log "Stitching route $route_id..."
+    route_ok=true
 
     # get the start time and save it to a text file
     first_seg=$(find "$LOCAL_RAW" -type d -name "$route_id--0" | sort -V | head -n1)
@@ -176,31 +184,42 @@ for route_id in $routes; do
             | sort -V \
             | while read segdir; do
                 hevc_file="$segdir/${cam}.hevc"
-                [ -f "$hevc_file" ] && echo "file '$hevc_file'" >> "$filelist"
+                if [ -f "$hevc_file" ]; then echo "file '$hevc_file'" >> "$filelist"; fi
             done
 
         if [ -s "$filelist" ]; then
             log "Stitching $cam -> $output"
-            ffmpeg -y -f concat -safe 0 -i "$filelist" -c copy "$output"
-
-            # generate thumbnails
-            thumbs_dir="$stitched_path/thumbs/$cam"
-            mkdir -p -m 2775 "$thumbs_dir"
-
-            duration=$(ffprobe -v error -select_streams v:0 -show_entries stream=duration \
-                       -of default=noprint_wrappers=1:nokey=1 "$output")
-
-            # 3 thumbnails evenly spaced
-            for i in 1 2 3; do
-                ts=$(awk "BEGIN {print $duration*$i/4}")
-                ffmpeg -y -ss "$ts" -i "$output" -frames:v 1 -s 320x180 "$thumbs_dir/thumb_$i.jpg"
-            done
+            if ! ffmpeg -y -loglevel error -f concat -safe 0 -i "$filelist" -c copy "$output"; then
+                log "ERROR: stitching $cam failed for $route_id"
+                rm -f "$output"
+                route_ok=false
+            else
+                # generate thumbnails; a failed thumbnail is a warning, not a failed route
+                thumbs_dir="$stitched_path/thumbs/$cam"
+                mkdir -p -m 2775 "$thumbs_dir"
+                duration=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$output" || true)
+                if [ -n "$duration" ]; then
+                    # 3 thumbnails evenly spaced
+                    for i in 1 2 3; do
+                        ts=$(awk "BEGIN {print $duration*$i/4}")
+                        ffmpeg -y -loglevel error -ss "$ts" -i "$output" -frames:v 1 -update 1 -s 320x180 "$thumbs_dir/thumb_$i.jpg" \
+                            || log "WARN: thumbnail $i failed for $cam in $route_id"
+                    done
+                else
+                    log "WARN: no duration for $output, thumbnails skipped"
+                fi
+            fi
         else
             log "No $cam files found in route $route_id"
         fi
 
-        rm "$filelist"
+        rm -f "$filelist"
     done
 
-    log "Finished stitching route $route_id"
+    if $route_ok; then
+        touch "$stitched_path/.done"
+        log "Finished stitching route $route_id"
+    else
+        log "Route $route_id incomplete, will retry on next run"
+    fi
 done

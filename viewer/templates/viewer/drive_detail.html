@@ -60,6 +60,16 @@
     <a href="{% url 'drive_list' %}" class="text-blue-600 hover:underline">← Back to Drives</a>
   </div>
 
+  <!-- Route map (hidden until the track has GPS points) -->
+  <div id="route-map-section" class="bg-gray-100 rounded-xl shadow-md p-4 mb-6 hidden">
+    <div class="flex justify-between items-center mb-2">
+      <h3 class="text-lg font-medium">Route</h3>
+      <button type="button" id="route-map-resize" aria-expanded="false"
+              class="px-3 py-1 text-sm bg-gray-200 rounded hover:bg-gray-300">Enlarge</button>
+    </div>
+    <div id="route-map" class="w-full h-96 rounded-md shadow-sm z-0"></div>
+  </div>
+
   <!-- Main video section (Front Camera) -->
   <div class="bg-gray-100 rounded-xl shadow-md p-4 mb-6">
     {% for video in drive.videos %}
@@ -88,4 +98,52 @@
     {% endfor %}
   </div>
 </div>
+
+<!-- Leaflet + OpenStreetMap tiles; the browser loads these from the internet -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script>
+  fetch("{% url 'drive_track' drive.route_id %}")
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (track) {
+      if (!track || !track.lines.length || typeof L === "undefined") return;
+      document.getElementById("route-map-section").classList.remove("hidden");
+      var map = L.map("route-map");
+      L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        maxZoom: 19,
+        // Django's default Referrer-Policy (same-origin) strips the Referer, and
+        // tile.openstreetmap.org answers requests without one with an "Access blocked" tile.
+        referrerPolicy: "strict-origin-when-cross-origin",
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+      }).addTo(map);
+      var bounds = L.latLngBounds([]);
+      track.lines.forEach(function (line) {
+        L.polyline(line, {color: "#2563eb", weight: 4}).addTo(map);
+        bounds.extend(line);
+      });
+      var first = track.lines[0][0];
+      var lastLine = track.lines[track.lines.length - 1];
+      var last = lastLine[lastLine.length - 1];
+      L.circleMarker(first, {radius: 7, color: "#15803d", fillColor: "#22c55e", fillOpacity: 1}).bindTooltip("Start").addTo(map);
+      L.circleMarker(last, {radius: 7, color: "#b91c1c", fillColor: "#ef4444", fillOpacity: 1}).bindTooltip("End").addTo(map);
+      map.fitBounds(bounds, {padding: [20, 20]});
+
+      // The map starts at its normal height; the button grows it to 85% of the window.
+      var mapEl = document.getElementById("route-map");
+      var resizeBtn = document.getElementById("route-map-resize");
+      resizeBtn.addEventListener("click", function () {
+        var enlarged = resizeBtn.getAttribute("aria-expanded") !== "true";
+        resizeBtn.setAttribute("aria-expanded", enlarged);
+        resizeBtn.textContent = enlarged ? "Shrink" : "Enlarge";
+        mapEl.style.height = enlarged ? "85vh" : "";
+        map.invalidateSize();
+        map.fitBounds(bounds, {padding: [20, 20]});
+        if (enlarged) {
+          document.getElementById("route-map-section").scrollIntoView({block: "start"});
+        }
+      });
+    });
+</script>
 {% endblock %}

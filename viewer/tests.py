@@ -5,7 +5,7 @@ from unittest import mock
 from django.test import TestCase
 from django.urls import reverse
 
-from viewer import views
+from viewer import tracks, views
 from viewer.templatetags import custom_filters
 
 
@@ -70,7 +70,128 @@ class DriveListCameraTests(TestCase):
         _, drives = self.get_rows()
         self.assertEqual(drives[0]["thumbnails"], [])
 
+    def test_map_tiles_are_requested_with_a_referrer(self):
+        # OpenStreetMap blocks tile requests that carry no Referer, and Django's
+        # default Referrer-Policy removes it for cross-origin requests.
+        self.make_drive("00000006--ffffffffff", ["fcamera"])
+        response = self.client.get(reverse("drive_detail", args=["00000006--ffffffffff"]))
+        self.assertContains(response, 'referrerPolicy: "strict-origin-when-cross-origin"')
+
+    def test_route_map_comes_before_the_cameras(self):
+        self.make_drive("00000007--1111111111", ["fcamera", "ecamera"])
+        response = self.client.get(reverse("drive_detail", args=["00000007--1111111111"]))
+        html = response.content.decode()
+        map_at = html.index('id="route-map-section"')
+        self.assertLess(map_at, html.index("Front Camera"))
+        self.assertLess(map_at, html.index("Wide Camera"))
+
+    def test_route_map_has_an_enlarge_button_and_starts_at_normal_height(self):
+        self.make_drive("00000008--2222222222", ["fcamera"])
+        response = self.client.get(reverse("drive_detail", args=["00000008--2222222222"]))
+        self.assertContains(response, 'id="route-map-resize"')
+        self.assertContains(response, 'id="route-map" class="w-full h-96')
+        self.assertContains(response, 'mapEl.style.height = enlarged ? "85vh" : ""')
+
     def test_no_stitched_path_line(self):
         self.make_drive("00000004--dddddddddd", ["fcamera"])
         response, _ = self.get_rows()
         self.assertNotContains(response, "Stitched path")
+
+
+def write_qlog(path, fixes):
+    """Write a qlog.zst holding one gpsLocationExternal per (flags, lat, lon, speed)."""
+    import zstandard as zstd
+
+    schema = tracks._schema()
+    chunks = []
+    for i, (flags, lat, lon, speed) in enumerate(fixes):
+        event = schema.Event.new_message(logMonoTime=i + 1)
+        gps = event.init("gpsLocationExternal")
+        gps.flags, gps.latitude, gps.longitude, gps.speed = flags, lat, lon, speed
+        chunks.append(event.to_bytes())
+        # an unrelated message type that must be ignored
+        other = schema.Event.new_message(logMonoTime=i + 1)
+        other.init("carState").vEgo = 5.0
+        chunks.append(other.to_bytes())
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(zstd.ZstdCompressor().compress(b"".join(chunks)))
+
+
+class RouteTrackTests(TestCase):
+    ROUTE = "00000005--eeeeeeeeee"
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        self.raw = root / "raw"
+        self.cache = root / "metadata" / "tracks"
+        self.raw.mkdir()
+        patcher = mock.patch.multiple(views, RAW_DIR=self.raw, METADATA_DIR=root / "metadata")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def segment(self, number, fixes):
+        write_qlog(self.raw / f"{self.ROUTE}--{number}" / "qlog.zst", fixes)
+
+    def track(self):
+        return tracks.route_track(self.ROUTE, self.raw, self.cache)
+
+    def test_points_from_all_segments_are_joined_in_order(self):
+        self.segment(1, [(1, 35.002, -82.002, 11.0)])
+        self.segment(0, [(1, 35.000, -82.000, 10.0), (1, 35.001, -82.001, 10.5)])
+        result = self.track()
+        self.assertEqual(
+            result["lines"],
+            [[[35.0, -82.0], [35.001, -82.001], [35.002, -82.002]]],
+        )
+        self.assertEqual(result["points"], 3)
+
+    def test_fixes_without_a_valid_gps_flag_or_at_0_0_are_dropped(self):
+        self.segment(0, [(0, 35.0, -82.0, 1.0), (1, 0.0, 0.0, 1.0), (1, 35.5, -82.5, 1.0)])
+        self.assertEqual(self.track()["lines"], [[[35.5, -82.5]]])
+
+    def test_missing_segment_breaks_the_line(self):
+        self.segment(0, [(1, 35.0, -82.0, 1.0)])
+        self.segment(2, [(1, 36.0, -83.0, 1.0)])
+        self.assertEqual(self.track()["lines"], [[[35.0, -82.0]], [[36.0, -83.0]]])
+
+    def test_route_without_any_fix_has_no_lines(self):
+        self.segment(0, [(0, 35.0, -82.0, 1.0)])
+        self.assertEqual(self.track(), {"lines": [], "points": 0})
+
+    def test_segments_are_cached_and_only_changed_ones_reparsed(self):
+        self.segment(0, [(1, 35.0, -82.0, 1.0)])
+        self.track()
+        self.assertTrue((self.cache / f"{self.ROUTE}.json").exists())
+        with mock.patch.object(tracks, "parse_segment", side_effect=AssertionError("reparsed")):
+            self.assertEqual(self.track()["points"], 1)
+        # a new segment appears: only it is parsed
+        self.segment(1, [(1, 35.1, -82.1, 1.0)])
+        real = tracks.parse_segment
+        with mock.patch.object(tracks, "parse_segment", side_effect=real) as parse:
+            self.assertEqual(self.track()["points"], 2)
+        self.assertEqual(parse.call_count, 1)
+
+    def test_corrupt_qlog_is_skipped(self):
+        self.segment(0, [(1, 35.0, -82.0, 1.0)])
+        bad = self.raw / f"{self.ROUTE}--1" / "qlog.zst"
+        bad.parent.mkdir()
+        bad.write_bytes(b"not zstd")
+        self.assertEqual(self.track()["points"], 1)
+
+    def test_unwritable_cache_does_not_break_the_track(self):
+        self.segment(0, [(1, 35.0, -82.0, 1.0)])
+        blocker = self.cache.parent
+        blocker.write_text("a file where the metadata dir should be")
+        self.assertEqual(self.track()["points"], 1)
+
+    def test_track_endpoint_returns_json(self):
+        self.segment(0, [(1, 35.0, -82.0, 1.0)])
+        response = self.client.get(reverse("drive_track", args=[self.ROUTE]))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"lines": [[[35.0, -82.0]]], "points": 1})
+
+    def test_track_endpoint_rejects_odd_route_ids(self):
+        response = self.client.get(reverse("drive_track", args=["bad.id"]))
+        self.assertEqual(response.status_code, 404)

@@ -150,13 +150,15 @@ routes=$(find "$LOCAL_RAW" -mindepth 1 -maxdepth 1 -type d \
          | awk -F'--' '{print $1"--"$2}' \
          | sort -u)
 
+# ask the device whether it is driving; if we can't tell, assume it is (safer)
+device_onroad=$(ssh $SSH_OPTS "$C3X_USER@$C3X_IP" 'cat /data/params/d/IsOnroad' 2>/dev/null || echo 1)
 newest_route=$(echo "$routes" | tail -n1)
 for route_id in $routes; do
     stitched_path="$LOCAL_STITCHED/$route_id"
     # .done is written only after every camera succeeds, so a failed route is retried
     [ -f "$stitched_path/.done" ] && continue
-    # the device numbers routes in order, so the last one may still be recording
-    if [ "$route_id" = "$newest_route" ]; then
+    # the device numbers routes in order; the last one is only held back while the device is driving
+    if [ "$route_id" = "$newest_route" ] && [ "$device_onroad" != "0" ]; then
         log "Route $route_id is the newest on the device, stitching later"
         continue
     fi

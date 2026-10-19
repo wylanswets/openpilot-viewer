@@ -6,6 +6,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN G=$(getent group 1000 | cut -d: -f1); [ -n "$G" ] || { groupadd -g 1000 opsync; G=opsync; }; getent passwd 1000 >/dev/null || useradd -u 1000 -g "$G" -d /home/opsync -m opsync
 ENV HOME=/home/opsync
 WORKDIR /app
-COPY c3x_sync.sh entrypoint.sh ./
+COPY c3x_sync.sh delete_lib.sh entrypoint.sh ./
 RUN chmod +x /app/c3x_sync.sh /app/entrypoint.sh
 ENTRYPOINT ["/app/entrypoint.sh"]

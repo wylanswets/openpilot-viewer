@@ -144,15 +144,19 @@ def drive_list(request):
         if start_time is None:
             start_time = DEFAULT_OLD_DATE
 
-        thumbnails = {}
+        # Only cameras that have footage in this drive get a thumbnail row.
+        thumbnails = []
         if stitched_path:
-            thumbnails = {
-                cam: [
-                    f"{route_id}/thumbs/{cam}/thumb_{i}.jpg"
-                    for i in thumb_indices
-                ]
-                for cam in cameras
-            }
+            for cam in cameras:
+                if not (stitched_path / f"{cam}.mp4").exists():
+                    continue
+                thumbnails.append({
+                    "label": CAMERA_LABELS.get(f"{cam}.mp4", cam),
+                    "thumbs": [
+                        f"{route_id}/thumbs/{cam}/thumb_{i}.jpg"
+                        for i in thumb_indices
+                    ],
+                })
 
         drive = {
             "route_id": route_id,
@@ -179,8 +183,6 @@ def drive_list(request):
 
     return render(request, "viewer/drive_list.html", {
         "page_obj": page_obj,
-        "cameras": cameras,
-        "camera_labels": CAMERA_LABELS,
         "thumb_indices": thumb_indices,
         "preserved_routes": preserved_routes,
         "show_preserved_only": show_preserved_only,

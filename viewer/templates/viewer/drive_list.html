@@ -65,11 +65,11 @@
 
             <!-- Thumbnails -->
             <div class="space-y-2">
-              {% for cam in cameras %}
+              {% for row in drive.thumbnails %}
                 <div>
-                  <span class="font-medium text-gray-700">{{ cam|title }} Camera</span>
+                  <span class="font-medium text-gray-700">{{ row.label }}</span>
                   <div class="flex gap-2 mt-1">
-                    {% for thumb in drive.thumbnails|dict_get:cam %}
+                    {% for thumb in row.thumbs %}
                       {% if thumb|file_exists_relative_url %}
                         <img src="/media/{{ thumb }}" class="w-24 h-24 object-cover rounded-md" />
                       {% else %}

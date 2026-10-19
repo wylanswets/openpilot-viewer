@@ -19,6 +19,14 @@ DELETED_FILE="${DELETED_FILE:-/data/logs/deleted_routes.txt}"
 SSH_OPTS="-i $SSH_KEY -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$KNOWN_HOSTS -o BatchMode=yes"
 # Keep partial files so a dropped connection resumes instead of restarting big files.
 RSYNC_RESUME="--partial --timeout=120"
+# How the log files are compared. The device keeps file times to the nanosecond and the NAS
+# share only to 100 ns, so a copy never has exactly the original's time. With times compared,
+# rsync saw every log file the device holds as changed on every run and rewrote all of them
+# (about 1.5 GB each run, little of it over the network), and each rewrite left the share
+# stamping the file with the current time. The logs never change once written, and a log that is
+# still growing differs in size, so only the size is compared. rsync still sets the times,
+# within the tolerance of --modify-window.
+RSYNC_LOGS_COMPARE="--size-only --modify-window=1"
 touch "$DELETED_FILE"
 
 MIN_FREE_GB="${MIN_FREE_GB:-75}"
@@ -123,7 +131,7 @@ log "Syncing logs first..."
 rsync -rtp \
   --chmod=Du=rwx,Dg=rws,Do=rx,Fu=rw,Fg=rw,Fo=r \
   --info=stats2,flist0,progress2 \
-  --no-i-r $RSYNC_RESUME \
+  --no-i-r $RSYNC_RESUME $RSYNC_LOGS_COMPARE \
   --prune-empty-dirs \
   -e "ssh $SSH_OPTS" \
   --exclude-from="$RSYNC_EXCLUDES" \

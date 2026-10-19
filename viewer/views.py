@@ -18,7 +18,8 @@ from django.views.decorators.http import require_POST
 from django.contrib import messages
 import shutil
 
-from . import summary, thumbnails, tracks
+from . import summary, tracks
+from . import thumbnails as route_thumbnails  # drive_list has a local named thumbnails
 
 DEFAULT_OLD_DATE = datetime(1900, 1, 1)
 
@@ -190,13 +191,13 @@ def drive_list(request):
     missing = []
     for drive in page_obj:
         route_id = drive["route_id"]
-        image = thumbnails.image_path(thumbs_dir, route_id)
+        image = route_thumbnails.image_path(thumbs_dir, route_id)
         if image.exists():
             drive["thumbnail_url"] = f"{reverse('drive_thumbnail', args=[route_id])}?v={int(image.stat().st_mtime)}"
-        if thumbnails.needs_work(thumbs_dir, route_id, len(raw_routes_grouped.get(route_id, []))):
+        if route_thumbnails.needs_work(thumbs_dir, route_id, len(raw_routes_grouped.get(route_id, []))):
             drive["thumbnail_pending"] = True
             missing.append(route_id)
-    thumbnails.start_background(missing, RAW_DIR, METADATA_DIR)
+    route_thumbnails.start_background(missing, RAW_DIR, METADATA_DIR)
 
     return render(request, "viewer/drive_list.html", {
         "page_obj": page_obj,
@@ -256,7 +257,7 @@ def drive_thumbnail(request, route_id):
     """The route map thumbnail (PNG) of a route, if it has been made."""
     if not tracks.VALID_ROUTE_RE.match(route_id):
         raise Http404("Unknown route")
-    path = thumbnails.image_path(METADATA_DIR / "thumbs", route_id)
+    path = route_thumbnails.image_path(METADATA_DIR / "thumbs", route_id)
     if not path.is_file():
         raise Http404("No thumbnail")
     response = FileResponse(open(path, "rb"), content_type="image/png")

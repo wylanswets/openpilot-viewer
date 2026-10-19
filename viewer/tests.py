@@ -41,7 +41,8 @@ class DriveListCameraTests(TestCase):
             (d / f"{cam}.mp4").write_bytes(b"")
             thumbs = d / "thumbs" / cam
             thumbs.mkdir(parents=True)
-            (thumbs / "thumb_1.jpg").write_bytes(b"")
+            for i in (1, 2, 3):
+                (thumbs / f"thumb_{i}.jpg").write_bytes(b"")
 
     def get_rows(self):
         response = self.client.get(reverse("drive_list"))
@@ -54,7 +55,7 @@ class DriveListCameraTests(TestCase):
         labels = [row["label"] for row in drives[0]["thumbnails"]]
         self.assertEqual(labels, ["Front Camera", "Wide Camera"])
         self.assertNotContains(response, "Driver Camera")
-        self.assertNotContains(response, "N/A", status_code=200)
+        self.assertNotContains(response, "N/A")
 
     def test_cameras_are_decided_per_drive(self):
         self.make_drive("00000001--aaaaaaaaaa", ["fcamera"])

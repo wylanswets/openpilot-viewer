@@ -73,6 +73,12 @@
     {% endfor %}
   </div>
 
+  <!-- Route map (hidden until the track has GPS points) -->
+  <div id="route-map-section" class="bg-gray-100 rounded-xl shadow-md p-4 mb-6 hidden">
+    <h3 class="text-lg font-medium mb-2">Route</h3>
+    <div id="route-map" class="w-full h-96 rounded-md shadow-sm z-0"></div>
+  </div>
+
   <!-- Other cameras -->
   <div class="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
     {% for video in drive.videos %}
@@ -88,4 +94,34 @@
     {% endfor %}
   </div>
 </div>
+
+<!-- Leaflet + OpenStreetMap tiles; the browser loads these from the internet -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script>
+  fetch("{% url 'drive_track' drive.route_id %}")
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (track) {
+      if (!track || !track.lines.length || typeof L === "undefined") return;
+      document.getElementById("route-map-section").classList.remove("hidden");
+      var map = L.map("route-map");
+      L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        maxZoom: 19,
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+      }).addTo(map);
+      var bounds = L.latLngBounds([]);
+      track.lines.forEach(function (line) {
+        L.polyline(line, {color: "#2563eb", weight: 4}).addTo(map);
+        bounds.extend(line);
+      });
+      var first = track.lines[0][0];
+      var lastLine = track.lines[track.lines.length - 1];
+      var last = lastLine[lastLine.length - 1];
+      L.circleMarker(first, {radius: 7, color: "#15803d", fillColor: "#22c55e", fillOpacity: 1}).bindTooltip("Start").addTo(map);
+      L.circleMarker(last, {radius: 7, color: "#b91c1c", fillColor: "#ef4444", fillOpacity: 1}).bindTooltip("End").addTo(map);
+      map.fitBounds(bounds, {padding: [20, 20]});
+    });
+</script>
 {% endblock %}

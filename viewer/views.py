@@ -9,12 +9,15 @@ from datetime import datetime
 from collections import defaultdict
 from collections import Counter
 
+from django.http import Http404, JsonResponse
 from django.shortcuts import render, redirect
 from django.core.paginator import Paginator
 
 from django.views.decorators.http import require_POST
 from django.contrib import messages
 import shutil
+
+from . import tracks
 
 DEFAULT_OLD_DATE = datetime(1900, 1, 1)
 
@@ -220,6 +223,13 @@ def drive_detail(request, route_id):
         "drive": drive,
         "preserved_routes": preserved_routes
     })
+
+def drive_track(request, route_id):
+    """GPS track of a route as JSON, for the map on the drive page."""
+    if not tracks.VALID_ROUTE_RE.match(route_id):
+        raise Http404("Unknown route")
+    return JsonResponse(tracks.route_track(route_id, RAW_DIR, METADATA_DIR / "tracks"))
+
 
 def segment_list(request, route_id):
     """Lists all available segments (minutes) for a route that have logs."""

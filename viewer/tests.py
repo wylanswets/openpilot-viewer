@@ -1717,7 +1717,8 @@ class RetentionPageTests(DrivesFixture, TestCase):
 
     def test_the_storage_preview_says_when_the_limit_cannot_be_reached(self):
         (self.meta / "preserved_routes.json").write_text('["0000000a--aaaaaaaaaa","0000000b--bbbbbbbbbb","0000000c--cccccccccc"]')
-        response = self.post(action="preview", policy="storage", keep_gb="1")
+        with mock.patch.object(retention, "GB", 1000):   # keep_gb=1 is a 1,000 byte limit; the drives use 21,000
+            response = self.post(action="preview", policy="storage", keep_gb="1")
         self.assertEqual(response.context["preview"]["plan"].count, 0)
         self.assertFalse(response.context["preview"]["plan"].limit_reached)
         self.assertContains(response, "The limit cannot be reached")

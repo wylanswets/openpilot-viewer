@@ -1591,11 +1591,11 @@ class RetentionEnforceTests(DrivesFixture, TestCase):
         self.assertEqual(len(deletion.pending(self.meta)), 2)
 
     def test_drives_already_on_their_way_out_no_longer_use_the_budget(self):
-        # four drives of 6 KB each; a limit that needs two of them gone. The Delete button was already
-        # used on one, so only one more is needed.
+        # four drives of 7,000 bytes each (28,000 in all) and a 15,000 byte limit. The Delete button was
+        # already used on A, so 21,000 are left and removing one more drive (B) is enough.
         deletion.request_delete("0000000a--aaaaaaaaaa", self.meta)
         retention.save_settings(self.meta, retention.Settings("storage", keep_gb=1))
-        with mock.patch.object(retention, "GB", 12_000 // 1):   # keep_gb=1 means a 12,000 byte limit here
+        with mock.patch.object(retention, "GB", 15_000):   # so keep_gb=1 means a 15,000 byte limit here
             result = self.enforce()
         self.assertEqual(removed(result), ["0000000b--bbbbbbbbbb"])
         self.assertEqual(deletion.pending_by_source(self.meta),

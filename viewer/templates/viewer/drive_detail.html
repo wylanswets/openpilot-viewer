@@ -360,11 +360,13 @@
         options: {
           responsive: true, maintainAspectRatio: false, animation: false,
           scales: {
-            x: {type: "linear", min: 0, max: endMin, title: {display: true, text: "Minutes into drive"}},
-            y: {beginAtZero: true, title: {display: true, text: "mph"}, afterFit: fixedAxis}
+            x: {type: "linear", min: 0, max: endMin, ticks: {color: theme().text}, grid: {color: theme().grid},
+                title: {display: true, text: "Minutes into drive", color: theme().text}},
+            y: {beginAtZero: true, ticks: {color: theme().text}, grid: {color: theme().grid},
+                title: {display: true, text: "mph", color: theme().text}, afterFit: fixedAxis}
           },
           plugins: {
-            legend: {position: "bottom"},
+            legend: {position: "bottom", labels: {color: theme().text}},
             tooltip: {callbacks: {
               title: function (items) { return clock(items[0].parsed.x * 60); },
               label: function (item) {
@@ -428,28 +430,28 @@
         }
       });
 
-      // the theme was changed with the toggle: give the charts the colours of the new theme
+      // the theme was changed with the toggle: give the charts the colours of the new theme.
+      // The colours are edited in the settings the chart was created from (they all exist from the
+      // start) and the chart is updated. Do not assign Chart.js's own settings objects to themselves
+      // (scale.ticks = scale.ticks || {}): in the real library that recurses forever and the error
+      // stops the update, so nothing would change.
       function applyTheme() {
         var c = theme();
         Chart.defaults.color = c.text;
         Chart.defaults.borderColor = c.grid;
-        [speedChart, stripsChart].forEach(function (chart) {
-          ["x", "y"].forEach(function (axis) {
-            var scale = chart.options.scales[axis];
-            scale.ticks = scale.ticks || {};
-            scale.ticks.color = c.text;
-            scale.grid = scale.grid || {};
-            scale.grid.color = c.grid;
-            if (scale.title) scale.title.color = c.text;
-          });
+        var options = speedChart.config.options;
+        ["x", "y"].forEach(function (axis) {
+          options.scales[axis].ticks.color = c.text;
+          options.scales[axis].grid.color = c.grid;
+          options.scales[axis].title.color = c.text;
         });
-        speedChart.options.plugins.legend.labels = {color: c.text};
+        options.plugins.legend.labels.color = c.text;
         speedChart.data.datasets.forEach(function (set, i) {
           if (i === 0) { set.borderColor = c.line; set.backgroundColor = c.line; }
           else { set.borderColor = c.markerEdge; }
         });
         speedChart.update("none");
-        stripsChart.update("none");  // its drawing plugin reads the colours each time
+        stripsChart.update("none");  // its drawing plugin reads the colours each time it draws
       }
       window.addEventListener("themechange", applyTheme);
 

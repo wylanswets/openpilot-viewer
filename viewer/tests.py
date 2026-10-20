@@ -1244,6 +1244,16 @@ class DarkModeTests(TestCase):
         for needle in ("THEME_COLORS", 'addEventListener("themechange"', "theme().band", "theme().label", "theme().line"):
             self.assertIn(needle, detail)
 
+    def test_recolouring_the_charts_does_not_assign_chartjs_objects_to_themselves(self):
+        # In the real Chart.js, `scale.ticks = scale.ticks || {}` on chart.options recurses forever, the
+        # error stops the update, and the charts keep their old colours until the page is reloaded.
+        detail = (TEMPLATES_DIR / "viewer" / "drive_detail.html").read_text()
+        self.assertNotIn("scale.ticks = scale.ticks", detail)
+        self.assertNotIn("scale.grid = scale.grid", detail)
+        # the colours are spelled out when the speed chart is created, so they can be changed in place
+        self.assertIn("ticks: {color: theme().text}, grid: {color: theme().grid}", detail)
+        self.assertIn("speedChart.config.options", detail)
+
     def test_text_colours_in_the_dark_palette_are_readable(self):
         # WCAG contrast of the text colours against the surfaces they sit on (4.5:1 for normal text)
         hexes = {
@@ -1286,6 +1296,7 @@ class DarkModeTests(TestCase):
         if node is None:
             self.skipTest("node is not installed here")
         tests = Path(__file__).resolve().parent / "tests_js"
-        for name in ("theme.test.js", "graphs_theme.test.js"):
+        # real_chartjs.test.js needs chart.js and jsdom (it skips itself, with a message, without them)
+        for name in ("theme.test.js", "graphs_theme.test.js", "real_chartjs.test.js"):
             result = subprocess.run([node, str(tests / name)], capture_output=True, text=True, timeout=60)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

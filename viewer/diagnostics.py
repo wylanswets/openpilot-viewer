@@ -334,7 +334,7 @@ def cached_diagnostics(route_id, raw_dir, cache_dir):
 
 def _expected_segments(route_id, raw_dir):
     found = _found_segments(route_id, raw_dir)
-    return (max(found) + 1) if found else 0
+    return (max(number for number, _ in found) + 1) if found else 0
 
 
 # ----------------------

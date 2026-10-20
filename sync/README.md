@@ -38,6 +38,22 @@ DEVICE_IP=192.168.1.50
       DEVICE_IP: ${DEVICE_IP}
 ```
 
+## Videos that play on iPhones
+
+Stitched videos are written with `-tag:v hvc1 -movflags +faststart` (stream copy, no re-encoding): Safari
+and iPhones only play HEVC in an MP4 tagged `hvc1`, and the index at the front lets playback start
+sooner. Videos stitched before this change are tagged `hev1`; `fix_video_tags.sh` repackages them the
+same way, without re-encoding. It writes each file next to the original, checks it (tag, duration, size),
+and only then replaces the original; it is safe to run again and skips routes that are not finished.
+
+```
+docker exec openpilot-sync /app/fix_video_tags.sh --dry-run      # list what it would do
+docker exec -d openpilot-sync /app/fix_video_tags.sh             # do it in the background
+tail -f <logs folder>/fix_video_tags.log
+```
+
+Tests: `bash sync/test_video_tags.sh` (the video part needs ffmpeg with libx265, as in the sync image).
+
 ## Deleting drives
 
 The viewer's Delete button does not delete anything itself: it creates an empty file named after

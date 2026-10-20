@@ -9,7 +9,7 @@ from unittest import mock
 from django.test import TestCase, override_settings
 from django.urls import reverse
 
-from viewer import deletion, labels, prepare, qlogs, summary, thumbnails, tracks, views
+from viewer import deletion, labels, prepare, qlogs, retention, summary, thumbnails, tracks, views
 from viewer.templatetags import custom_filters
 
 
@@ -1300,3 +1300,494 @@ class DarkModeTests(TestCase):
         for name in ("theme.test.js", "graphs_theme.test.js", "real_chartjs.test.js"):
             result = subprocess.run([node, str(tests / name)], capture_output=True, text=True, timeout=60)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+
+
+# ----------------------
+# Retention
+# ----------------------
+
+import datetime as _dt
+
+NOW = _dt.datetime(2026, 10, 20, 12, 0)
+
+
+def drive(route_id, days_ago, gb=10, starred=False, finished=True, known_start=True):
+    start = NOW - _dt.timedelta(days=days_ago) if known_start else None
+    return retention.Drive(route_id, start, int(gb * 1e9), starred, finished)
+
+
+def settings_for(policy, **kw):
+    kw.setdefault("keep_drives", 2)
+    return retention.Settings(policy=policy, **kw)
+
+
+def removed(result):
+    return [d.route_id for d in result.remove]
+
+
+class RetentionPlanTests(TestCase):
+    def setUp(self):
+        self.four = [drive("A", 40), drive("B", 30), drive("C", 20), drive("D", 10)]
+
+    def test_off_removes_nothing(self):
+        self.assertEqual(removed(retention.plan(self.four, settings_for("off"), NOW)), [])
+
+    def test_keep_the_newest_n(self):
+        result = retention.plan(self.four, settings_for("count"), NOW)
+        self.assertEqual(removed(result), ["A", "B"])
+        self.assertEqual((result.freed, result.total_before, result.total_after), (20 * 10 ** 9, 40 * 10 ** 9, 20 * 10 ** 9))
+
+    def test_a_starred_drive_is_never_removed_and_the_next_one_goes_instead(self):
+        drives = [drive("A", 40, starred=True)] + self.four[1:]
+        self.assertEqual(removed(retention.plan(drives, settings_for("count"), NOW)), ["B"])
+
+    def test_a_starred_drive_among_the_newest_uses_one_of_the_slots(self):
+        drives = self.four[:3] + [drive("D", 10, starred=True)]
+        self.assertEqual(removed(retention.plan(drives, settings_for("count"), NOW)), ["A", "B"])
+
+    def test_a_drive_that_is_still_arriving_counts_as_newest_but_is_never_removed(self):
+        drives = self.four + [drive("E", 5, finished=False)]
+        self.assertEqual(removed(retention.plan(drives, settings_for("count"), NOW)), ["A", "B", "C"])
+        old_unfinished = [drive("U", 90, finished=False)] + self.four
+        self.assertNotIn("U", removed(retention.plan(old_unfinished, settings_for("count", keep_drives=1), NOW)))
+
+    def test_a_drive_with_an_unknown_start_is_neither_counted_nor_removed(self):
+        drives = self.four + [drive("X", 0, known_start=False)]
+        self.assertEqual(removed(retention.plan(drives, settings_for("count"), NOW)), ["A", "B"])
+
+    def test_keep_n_larger_than_the_number_of_drives(self):
+        self.assertEqual(removed(retention.plan(self.four, settings_for("count", keep_drives=10), NOW)), [])
+
+    def test_keep_drives_from_the_last_days(self):
+        self.assertEqual(removed(retention.plan(self.four, settings_for("days", keep_days=15), NOW)), ["A", "B", "C"])
+
+    def test_a_drive_exactly_at_the_cut_off_is_kept(self):
+        self.assertEqual(removed(retention.plan(self.four, settings_for("days", keep_days=20), NOW)), ["A", "B"])
+
+    def test_age_rule_skips_starred_unfinished_and_unknown(self):
+        drives = [drive("S", 90, starred=True), drive("U", 90, finished=False), drive("X", 0, known_start=False), drive("O", 90)]
+        self.assertEqual(removed(retention.plan(drives, settings_for("days", keep_days=30), NOW)), ["O"])
+
+    def test_storage_limit_removes_the_oldest_until_under_it(self):
+        result = retention.plan(self.four, settings_for("storage", keep_gb=25), NOW)
+        self.assertEqual(removed(result), ["A", "B"])
+        self.assertTrue(result.limit_reached)
+        self.assertEqual(result.limit, 25 * 10 ** 9)
+
+    def test_storage_exactly_at_the_limit_removes_nothing(self):
+        self.assertEqual(removed(retention.plan(self.four, settings_for("storage", keep_gb=40), NOW)), [])
+
+    def test_starred_drives_count_toward_the_storage_limit(self):
+        drives = [drive("A", 40, starred=True)] + self.four[1:]
+        result = retention.plan(drives, settings_for("storage", keep_gb=25), NOW)
+        self.assertEqual(removed(result), ["B", "C"])          # A stays but its 10 GB is in the budget
+        self.assertEqual(result.total_after, 20 * 10 ** 9)
+
+    def test_a_limit_that_cannot_be_reached_removes_what_it_can_and_says_so(self):
+        drives = [drive("A", 40, 30, starred=True), drive("B", 5, 4)]
+        result = retention.plan(drives, settings_for("storage", keep_gb=10), NOW)
+        self.assertEqual(removed(result), ["B"])
+        self.assertFalse(result.limit_reached)
+        self.assertFalse(retention.plan([drive("A", 40, 30, starred=True)], settings_for("storage", keep_gb=10), NOW).limit_reached)
+
+    def test_unfinished_and_unknown_drives_use_the_storage_budget_too(self):
+        drives = [drive("U", 1, 20, finished=False), drive("X", 0, 20, known_start=False), drive("O", 30, 5)]
+        result = retention.plan(drives, settings_for("storage", keep_gb=30), NOW)
+        self.assertEqual(removed(result), ["O"])
+        self.assertFalse(result.limit_reached)
+
+    def test_order_is_oldest_first_whatever_the_input_order(self):
+        shuffled = [self.four[2], self.four[0], self.four[3], self.four[1]]
+        self.assertEqual(removed(retention.plan(shuffled, settings_for("storage", keep_gb=5), NOW)), ["A", "B", "C", "D"])
+
+    def test_drives_with_the_same_start_are_ordered_by_name(self):
+        same = [drive("Z", 30), drive("M", 30), drive("keep", 1)]
+        self.assertEqual(removed(retention.plan(same, settings_for("count", keep_drives=1), NOW)), ["M", "Z"])
+
+    def test_the_plan_changes_nothing(self):
+        before = list(self.four)
+        retention.plan(self.four, settings_for("storage", keep_gb=1), NOW)
+        self.assertEqual(self.four, before)
+
+
+class RetentionSettingsTests(TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.meta = Path(tmp.name)
+
+    def test_nothing_is_on_by_default(self):
+        self.assertEqual(retention.load_settings(self.meta).policy, "off")
+
+    def test_values_from_a_form(self):
+        parsed, errors = retention.parse_settings({"policy": "count", "keep_drives": "12", "keep_days": "7", "keep_gb": "250"})
+        self.assertEqual((parsed.policy, parsed.keep_drives, parsed.keep_days, parsed.keep_gb, errors), ("count", 12, 7, 250, []))
+
+    def test_blank_values_use_the_defaults(self):
+        parsed, errors = retention.parse_settings({"policy": "days", "keep_days": ""})
+        self.assertEqual((parsed.policy, parsed.keep_days, errors), ("days", 30, []))
+
+    def test_bad_values_are_reported(self):
+        self.assertTrue(retention.parse_settings({"policy": "banana"})[1])
+        self.assertTrue(retention.parse_settings({"policy": "count", "keep_drives": "ten"})[1])
+        self.assertTrue(retention.parse_settings({"policy": "count", "keep_drives": "0"})[1])
+        self.assertTrue(retention.parse_settings({"policy": "storage", "keep_gb": "-5"})[1])
+        self.assertTrue(retention.parse_settings({"policy": "days", "keep_days": "99999999"})[1])
+        clamped, _ = retention.parse_settings({"policy": "count", "keep_drives": "0"})
+        self.assertEqual(clamped.keep_drives, 1)
+
+    def test_saved_settings_are_read_back(self):
+        saved = retention.Settings("storage", 20, 14, 750)
+        retention.save_settings(self.meta, saved)
+        self.assertEqual(retention.load_settings(self.meta), saved)
+
+    def test_the_file_can_be_read_by_bash(self):
+        import shutil
+        import subprocess
+        bash = shutil.which("bash")
+        if bash is None:
+            self.skipTest("bash is not installed here")
+        retention.save_settings(self.meta, retention.Settings("days", 20, 14, 750))
+        out = subprocess.run([bash, "-c", f'source "{retention.conf_path(self.meta)}"; echo "$POLICY $KEEP_DRIVES $KEEP_DAYS $KEEP_GB"'],
+                             capture_output=True, text=True, timeout=10)
+        self.assertEqual(out.stdout.strip(), "days 20 14 750")
+
+    def test_a_damaged_or_hand_edited_file_never_turns_something_on_by_accident(self):
+        path = retention.conf_path(self.meta)
+        path.write_text("garbage\n\x00\xff nonsense")
+        self.assertEqual(retention.load_settings(self.meta).policy, "off")
+        path.write_text("# comment\nPOLICY=storage\nKEEP_GB=abc\nOTHER=1\nKEEP_DAYS=5\n")
+        loaded = retention.load_settings(self.meta)
+        self.assertEqual((loaded.policy, loaded.keep_gb, loaded.keep_days), ("storage", 500, 5))   # bad value: default
+        path.write_text("POLICY=count; rm -rf /\nKEEP_DRIVES=3\n")
+        self.assertEqual(retention.load_settings(self.meta).policy, "off")
+
+    def test_describe(self):
+        self.assertEqual(retention.Settings("count", 8).describe(), "Keep the newest 8 drives")
+        self.assertIn("30 days", retention.Settings("days", 8, 30).describe())
+        self.assertIn("500 GB", retention.Settings("storage").describe())
+
+
+class RetentionDrivesTests(TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        self.raw, self.stitched, self.meta = root / "raw", root / "stitched", root / "metadata"
+        for d in (self.raw, self.stitched, self.meta):
+            d.mkdir()
+
+    def make(self, route, segments=2, video=True, done=True, size=1000):
+        for n in range(segments):
+            (self.raw / f"{route}--{n}").mkdir()
+            (self.raw / f"{route}--{n}" / "qlog.zst").write_bytes(b"x" * size)
+        if video:
+            (self.stitched / route).mkdir()
+            (self.stitched / route / "fcamera.mp4").write_bytes(b"v" * (size * 5))
+            if done:
+                (self.stitched / route / ".done").touch()
+
+    def collect(self, **kw):
+        start = kw.pop("start", lambda route: NOW)
+        return {d.route_id: d for d in retention.collect_drives(self.raw, self.stitched, kw.pop("starred", set()), start, **kw)}
+
+    def test_dir_size_adds_up_nested_files(self):
+        (self.raw / "a" / "b").mkdir(parents=True)
+        (self.raw / "a" / "one").write_bytes(b"1" * 10)
+        (self.raw / "a" / "b" / "two").write_bytes(b"2" * 32)
+        self.assertEqual(retention.dir_size(self.raw / "a"), 42)
+        self.assertEqual(retention.dir_size(self.raw / "missing"), 0)
+
+    def test_a_drive_is_its_raw_segments_plus_its_stitched_folder(self):
+        self.make("0000000a--aaaaaaaaaa", segments=3, size=1000)
+        found = self.collect()["0000000a--aaaaaaaaaa"]
+        self.assertEqual(found.size, 3 * 1000 + 5000)
+        self.assertTrue(found.finished)
+
+    def test_finished_means_the_done_marker(self):
+        self.make("0000000a--aaaaaaaaaa", done=False)
+        self.make("0000000b--bbbbbbbbbb", video=False)
+        drives = self.collect()
+        self.assertFalse(drives["0000000a--aaaaaaaaaa"].finished)
+        self.assertFalse(drives["0000000b--bbbbbbbbbb"].finished)
+
+    def test_starred_drives_are_marked(self):
+        self.make("0000000a--aaaaaaaaaa")
+        self.make("0000000b--bbbbbbbbbb")
+        drives = self.collect(starred={"0000000b--bbbbbbbbbb"})
+        self.assertEqual((drives["0000000a--aaaaaaaaaa"].starred, drives["0000000b--bbbbbbbbbb"].starred), (False, True))
+
+    def test_folders_that_are_not_drives_are_ignored(self):
+        self.make("0000000a--aaaaaaaaaa")
+        (self.raw / "boot").mkdir()
+        (self.raw / "notes").mkdir()
+        (self.raw / "weird name--1").mkdir()
+        self.assertEqual(list(self.collect()), ["0000000a--aaaaaaaaaa"])
+
+    def test_a_stitched_folder_without_raw_segments_is_still_a_drive(self):
+        (self.stitched / "0000000c--cccccccccc").mkdir()
+        (self.stitched / "0000000c--cccccccccc" / "fcamera.mp4").write_bytes(b"v" * 7)
+        self.assertEqual(self.collect()["0000000c--cccccccccc"].size, 7)
+
+    def test_drives_marked_for_removal_are_left_out(self):
+        self.make("0000000a--aaaaaaaaaa")
+        self.make("0000000b--bbbbbbbbbb")
+        self.assertEqual(list(self.collect(skip={"0000000a--aaaaaaaaaa"})), ["0000000b--bbbbbbbbbb"])
+
+    def test_an_unknown_start_time_is_none(self):
+        self.make("0000000a--aaaaaaaaaa")
+        drives = self.collect(start=lambda route: _dt.datetime(1900, 1, 1))
+        self.assertIsNone(drives["0000000a--aaaaaaaaaa"].start)
+
+
+class RetentionEnforceTests(RetentionDrivesTests):
+    def enforce(self, now=NOW, starred=()):
+        starts = {"0000000a--aaaaaaaaaa": NOW - _dt.timedelta(days=40), "0000000b--bbbbbbbbbb": NOW - _dt.timedelta(days=30),
+                  "0000000c--cccccccccc": NOW - _dt.timedelta(days=20), "0000000d--dddddddddd": NOW - _dt.timedelta(days=10)}
+        return retention.enforce_once(self.raw, self.stitched, self.meta, lambda r: starts[r], lambda: set(starred), now)
+
+    def setUp(self):
+        super().setUp()
+        for route in ("0000000a--aaaaaaaaaa", "0000000b--bbbbbbbbbb", "0000000c--cccccccccc", "0000000d--dddddddddd"):
+            self.make(route)
+
+    def set_policy(self, policy, **kw):
+        retention.save_settings(self.meta, retention.Settings(policy, **{"keep_drives": 2, **kw}))
+
+    def test_nothing_is_requested_while_the_policy_is_off(self):
+        result = self.enforce()
+        self.assertEqual(result.count, 0)
+        self.assertEqual(deletion.pending(self.meta), set())
+
+    def test_the_policy_asks_for_the_drives_it_removes(self):
+        self.set_policy("count")
+        result = self.enforce()
+        self.assertEqual(removed(result), ["0000000a--aaaaaaaaaa", "0000000b--bbbbbbbbbb"])
+        self.assertEqual(deletion.pending_by_source(self.meta),
+                         {"0000000a--aaaaaaaaaa": "retention", "0000000b--bbbbbbbbbb": "retention"})
+        # the sync only looks at the file names: the files are in the place it reads, valid and not empty
+        self.assertEqual((deletion.requests_dir(self.meta) / "0000000a--aaaaaaaaaa").read_text(), "retention")
+
+    def test_nothing_on_disk_is_touched_by_the_viewer(self):
+        self.set_policy("count")
+        self.enforce()
+        self.assertTrue((self.raw / "0000000a--aaaaaaaaaa--0").exists())
+        self.assertTrue((self.stitched / "0000000a--aaaaaaaaaa").exists())
+
+    def test_starred_drives_are_never_requested(self):
+        self.set_policy("count", keep_drives=1)
+        self.enforce(starred={"0000000a--aaaaaaaaaa"})
+        self.assertNotIn("0000000a--aaaaaaaaaa", deletion.pending(self.meta))
+
+    def test_a_second_run_does_not_ask_again(self):
+        self.set_policy("count")
+        self.enforce()
+        again = self.enforce()
+        self.assertEqual(again.count, 0)
+        self.assertEqual(len(deletion.pending(self.meta)), 2)
+
+    def test_drives_already_on_their_way_out_free_budget_in_the_calculation(self):
+        deletion.request_delete("0000000a--aaaaaaaaaa", self.meta)       # the Delete button was used
+        self.set_policy("storage", keep_gb=1)
+        sizes = {d.route_id: d.size for d in retention.collect_drives(self.raw, self.stitched, set(), lambda r: NOW)}
+        retention.save_settings(self.meta, retention.Settings("storage", keep_gb=1))
+        # with the limit far above what is left, only the manual request is pending
+        total_left = sum(size for route, size in sizes.items() if route != "0000000a--aaaaaaaaaa")
+        self.assertLess(total_left, 10 ** 9)
+        self.assertEqual(self.enforce().count, 0)
+        self.assertEqual(deletion.pending_by_source(self.meta), {"0000000a--aaaaaaaaaa": "manual"})
+
+    def test_it_records_what_it_did(self):
+        self.set_policy("count")
+        self.enforce()
+        status = retention.read_status(self.meta)
+        self.assertEqual((status["last_run"], status["policy"], status["last_count"]), ("2026-10-20T12:00:00", "count", 2))
+        self.assertEqual(status["last_ids"], ["0000000a--aaaaaaaaaa", "0000000b--bbbbbbbbbb"])
+        self.assertEqual(status["runs"][0]["count"], 2)
+
+    def test_a_run_that_removes_nothing_is_not_added_to_the_history(self):
+        self.set_policy("count")
+        self.enforce()
+        self.enforce()
+        status = retention.read_status(self.meta)
+        self.assertEqual((status["last_count"], len(status["runs"])), (0, 1))
+
+    def test_the_history_is_limited(self):
+        self.set_policy("count", keep_drives=1)
+        for i in range(retention.HISTORY_LENGTH + 3):
+            for route in ("0000000a--aaaaaaaaaa", "0000000b--bbbbbbbbbb", "0000000c--cccccccccc"):
+                try:
+                    (deletion.requests_dir(self.meta) / route).unlink()
+                except FileNotFoundError:
+                    pass
+            self.enforce(now=NOW + _dt.timedelta(minutes=i))
+        self.assertEqual(len(retention.read_status(self.meta)["runs"]), retention.HISTORY_LENGTH)
+
+    def test_a_drive_that_is_still_being_stitched_is_never_requested(self):
+        (self.stitched / "0000000a--aaaaaaaaaa" / ".done").unlink()
+        self.set_policy("days", keep_days=1)
+        self.enforce()
+        self.assertNotIn("0000000a--aaaaaaaaaa", deletion.pending(self.meta))
+
+
+class RetentionPageTests(RetentionDrivesTests):
+    def setUp(self):
+        super().setUp()
+        for target, name, value in (
+            (views, "RAW_DIR", self.raw), (views, "STITCHED_DIR", self.stitched), (views, "METADATA_DIR", self.meta),
+            (views, "PRESERVED_FILE", self.meta / "preserved_routes.json"), (custom_filters, "STITCHED_DIR", self.stitched),
+        ):
+            patcher = mock.patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        patcher = mock.patch.object(thumbnails, "start_background")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        for i, route in enumerate(("0000000a--aaaaaaaaaa", "0000000b--bbbbbbbbbb", "0000000c--cccccccccc")):
+            self.make(route)
+            (self.stitched / route / "start_time.txt").write_text((NOW - _dt.timedelta(days=40 - 10 * i)).strftime("%Y-%m-%d %H:%M:%S"))
+        self.url = reverse("retention_page")
+
+    def post(self, **fields):
+        data = {"policy": "count", "keep_drives": "1", "keep_days": "30", "keep_gb": "500"}
+        data.update(fields)
+        return self.client.post(self.url, data)
+
+    def test_the_page_shows_usage_and_the_options(self):
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Storage and retention")
+        self.assertContains(response, "Used now")
+        for value in ("off", "count", "days", "storage"):
+            self.assertContains(response, f'name="policy" value="{value}"')
+        self.assertContains(response, "Nothing has been removed by this setting yet.") if False else None
+        self.assertEqual(response.context["drive_count"], 3)
+
+    def test_the_top_bar_links_to_the_page(self):
+        self.assertContains(self.client.get(reverse("drive_list")), f'href="{self.url}"')
+
+    def test_a_preview_changes_nothing(self):
+        response = self.post(action="preview")
+        self.assertContains(response, "would be removed")
+        self.assertEqual(retention.load_settings(self.meta).policy, "off")
+        self.assertEqual(deletion.pending(self.meta), set())
+
+    def test_saving_something_that_deletes_needs_the_box_ticked(self):
+        response = self.post(action="save")
+        self.assertContains(response, "Tick the box")
+        self.assertEqual(retention.load_settings(self.meta).policy, "off")
+        self.assertEqual(deletion.pending(self.meta), set())
+
+    def test_saving_with_the_box_ticked_saves_and_asks_for_the_removals(self):
+        response = self.post(action="save", confirm="1")
+        self.assertRedirects(response, self.url, fetch_redirect_response=False)
+        self.assertEqual(retention.load_settings(self.meta), retention.Settings("count", 1, 30, 500))
+        self.assertEqual(set(deletion.pending_by_source(self.meta).values()), {"retention"})
+        self.assertEqual(len(deletion.pending(self.meta)), 2)
+        self.assertContains(self.client.get(self.url), "marked for removal and waiting for the sync")
+
+    def test_saving_something_that_removes_nothing_needs_no_confirmation(self):
+        response = self.post(action="save", policy="count", keep_drives="10")
+        self.assertRedirects(response, self.url, fetch_redirect_response=False)
+        self.assertEqual(retention.load_settings(self.meta).keep_drives, 10)
+        self.assertEqual(deletion.pending(self.meta), set())
+
+    def test_turning_it_off(self):
+        retention.save_settings(self.meta, retention.Settings("count", 1))
+        response = self.post(action="save", policy="off")
+        self.assertRedirects(response, self.url, fetch_redirect_response=False)
+        self.assertEqual(retention.load_settings(self.meta).policy, "off")
+
+    def test_bad_values_are_refused_with_a_message_and_nothing_saved(self):
+        for fields in ({"keep_drives": "abc"}, {"keep_drives": "0"}, {"policy": "banana"}, {"policy": "storage", "keep_gb": "-3"}):
+            response = self.post(action="save", confirm="1", **fields)
+            self.assertEqual(response.status_code, 200)
+            self.assertTrue(response.context["errors"], fields)
+        self.assertEqual(retention.load_settings(self.meta).policy, "off")
+        self.assertEqual(deletion.pending(self.meta), set())
+
+    def test_starred_drives_are_kept_and_the_preview_leaves_them_out(self):
+        (self.meta / "preserved_routes.json").write_text('["0000000a--aaaaaaaaaa"]')
+        response = self.post(action="preview")
+        self.assertNotContains(response, "0000000a--aaaaaaaaaa")
+        self.assertContains(response, "0000000b--bbbbbbbbbb")
+
+    def test_the_storage_preview_says_when_the_limit_cannot_be_reached(self):
+        (self.meta / "preserved_routes.json").write_text('["0000000a--aaaaaaaaaa","0000000b--bbbbbbbbbb","0000000c--cccccccccc"]')
+        response = self.post(action="preview", policy="storage", keep_gb="1")
+        self.assertContains(response, "The limit cannot be reached") if False else None
+        self.assertEqual(response.context["preview"]["plan"].count, 0)
+
+    def test_drives_removed_by_the_setting_are_hidden_without_an_undo(self):
+        self.post(action="save", confirm="1")
+        listing = self.client.get(reverse("drive_list"))
+        self.assertNotContains(listing, 'href="/drive/0000000a--aaaaaaaaaa/"')
+        self.assertContains(listing, 'href="/drive/0000000c--cccccccccc/"')
+        self.assertContains(listing, "being removed by the")
+        self.assertNotContains(listing, "Being deleted (")
+        self.assertNotContains(listing, "undo_delete")
+
+    def test_undo_is_refused_for_a_drive_the_setting_is_removing(self):
+        self.post(action="save", confirm="1")
+        response = self.client.post(reverse("undo_delete", args=["0000000a--aaaaaaaaaa"]))
+        self.assertRedirects(response, self.url, fetch_redirect_response=False)
+        self.assertIn("0000000a--aaaaaaaaaa", deletion.pending(self.meta))
+
+    def test_a_manual_delete_still_shows_its_undo(self):
+        deletion.request_delete("0000000a--aaaaaaaaaa", self.meta)
+        listing = self.client.get(reverse("drive_list"))
+        self.assertContains(listing, "Being deleted (1)")
+        self.assertNotContains(listing, "being removed by the")
+
+    def test_the_page_only_accepts_get_and_post_and_needs_no_login(self):
+        self.assertEqual(self.client.put(self.url).status_code, 405)
+        self.assertEqual(self.client.get(self.url).status_code, 200)
+
+
+class RetentionEnforcerThreadTests(TestCase):
+    def setUp(self):
+        patcher = mock.patch.object(retention, "_enforcer", None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_when_the_background_thread_starts(self):
+        gunicorn = ["/usr/local/bin/gunicorn", "openpilot_viewer.wsgi"]
+        self.assertTrue(retention.should_start_enforcer({}, gunicorn))
+        self.assertFalse(retention.should_start_enforcer({}, ["manage.py", "test"]))
+        self.assertFalse(retention.should_start_enforcer({}, []))
+        self.assertFalse(retention.should_start_enforcer({"RETENTION_ENFORCER": "0"}, gunicorn))
+        self.assertFalse(retention.should_start_enforcer({"RETENTION_ENFORCER": "off"}, gunicorn))
+        self.assertTrue(retention.should_start_enforcer({"RETENTION_ENFORCER": "1"}, ["manage.py"]))
+
+    def test_the_test_run_itself_did_not_start_it(self):
+        self.assertIsNone(retention._enforcer)
+
+    def test_it_runs_the_job_and_keeps_going_after_a_failure(self):
+        runs, sleeps, stop = [], [], threading.Event()
+
+        def sleep(seconds):
+            sleeps.append(seconds)
+            if len(sleeps) >= 3:
+                stop.wait(5)  # park the thread so the test can look at it
+
+        def job():
+            runs.append(1)
+            if len(runs) == 1:
+                raise RuntimeError("first run fails")
+
+        with mock.patch("sys.stderr"):
+            thread = retention.start_enforcer(job, interval=600, first_delay=120, sleep=sleep)
+            deadline = time.time() + 5
+            while len(sleeps) < 3 and time.time() < deadline:
+                time.sleep(0.01)
+        self.assertEqual(sleeps[:3], [120, 600, 600])   # waits first, then every interval
+        self.assertEqual(len(runs), 2)                   # the failure did not stop the next run
+        self.assertTrue(thread.is_alive())
+        stop.set()
+
+    def test_only_one_thread_per_process(self):
+        stop = threading.Event()
+        first = retention.start_enforcer(lambda: None, sleep=lambda s: stop.wait(5))
+        self.assertIs(retention.start_enforcer(lambda: None, sleep=lambda s: stop.wait(5)), first)
+        stop.set()

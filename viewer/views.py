@@ -18,7 +18,7 @@ from django.views.decorators.http import require_POST
 from django.contrib import messages
 import shutil
 
-from . import deletion, prepare, summary, tracks
+from . import deletion, prepare, retention, summary, tracks
 from . import thumbnails as route_thumbnails  # drive_list has a local named thumbnails
 
 DEFAULT_OLD_DATE = datetime(1900, 1, 1)
@@ -141,8 +141,10 @@ def drive_list(request):
     all_route_ids = set(raw_routes_grouped.keys()) | set(stitched_routes.keys())
 
     # drives marked for deletion are hidden at once; the sync removes them from disk
-    marked = deletion.pending(METADATA_DIR)
-    pending_deletes = sorted(all_route_ids & marked)
+    marks = deletion.pending_by_source(METADATA_DIR)
+    marked = set(marks)
+    pending_deletes = sorted(r for r in all_route_ids & marked if marks[r] == "manual")
+    retention_pending = len(all_route_ids & {r for r, source in marks.items() if source == "retention"})
     all_route_ids -= marked
 
     for route_id in all_route_ids:
@@ -217,6 +219,7 @@ def drive_list(request):
         "preserved_routes": preserved_routes,
         "show_preserved_only": show_preserved_only,
         "pending_deletes": pending_deletes,
+        "retention_pending": retention_pending,
     })
 
 
@@ -281,6 +284,10 @@ def undo_delete(request, route_id):
     """Withdraw a deletion that the sync has not carried out yet."""
     if not deletion.is_valid_route_id(route_id):
         raise Http404("Unknown route")
+    if deletion.pending_by_source(METADATA_DIR).get(route_id) == "retention":
+        # the retention setting would just ask again at its next run
+        messages.warning(request, f"{route_id} is being removed by the retention setting. Change the setting on the Storage page to keep it.")
+        return redirect("retention_page")
     if deletion.cancel(route_id, METADATA_DIR):
         messages.success(request, f"{route_id} will not be deleted.")
         return redirect("drive_detail", route_id=route_id)
@@ -312,6 +319,52 @@ def drive_thumbnail(request, route_id):
     response = FileResponse(open(path, "rb"), content_type="image/png")
     response["Cache-Control"] = "public, max-age=3600"
     return response
+
+
+def retention_page(request):
+    """Storage and retention: usage, the policy for how long drives are kept, a preview, what happened last."""
+    saved = retention.load_settings(METADATA_DIR)
+    form = {"policy": saved.policy, "keep_drives": saved.keep_drives, "keep_days": saved.keep_days, "keep_gb": saved.keep_gb}
+    errors, preview, need_confirm = [], None, False
+    marks = deletion.pending_by_source(METADATA_DIR)
+    drives = retention.collect_drives(RAW_DIR, STITCHED_DIR, load_preserved_routes(), get_route_start_time)
+    on_disk = [d for d in drives if d.route_id not in marks]   # drives already on their way out are left out
+    now = retention.utc_now()
+
+    if request.method == "POST":
+        form = {key: request.POST.get(key, "") for key in form}
+        wanted, errors = retention.parse_settings(form)
+        if not errors:
+            result = retention.plan(on_disk, wanted, now)
+            preview = {"plan": result, "rows": result.remove[:15], "more": max(result.count - 15, 0), "settings": wanted}
+            if request.POST.get("action") == "save":
+                if result.count and not request.POST.get("confirm"):
+                    need_confirm = True
+                else:
+                    retention.save_settings(METADATA_DIR, wanted)
+                    done = retention.enforce_once(RAW_DIR, STITCHED_DIR, METADATA_DIR, get_route_start_time, load_preserved_routes, now)
+                    if wanted.policy == "off":
+                        messages.success(request, "Saved: nothing is removed automatically.")
+                    elif done.count:
+                        messages.success(request, f"Saved. {done.count} drives ({done.freed / 1e9:.1f} GB) are marked for removal; "
+                                                  "they are hidden now and the sync removes them within about 5 minutes.")
+                    else:
+                        messages.success(request, f"Saved: {wanted.describe().lower()}. Nothing needs removing right now.")
+                    return redirect("retention_page")
+
+    try:
+        free = shutil.disk_usage(RAW_DIR).free
+    except OSError:
+        free = None
+    status = retention.read_status(METADATA_DIR)
+    return render(request, "viewer/retention.html", {
+        "saved": saved, "form": form, "errors": errors, "preview": preview, "need_confirm": need_confirm,
+        "drive_count": len(drives), "total_bytes": sum(d.size for d in drives),
+        "starred_count": sum(1 for d in drives if d.starred), "starred_bytes": sum(d.size for d in drives if d.starred),
+        "unfinished_count": sum(1 for d in drives if not d.finished), "free_bytes": free,
+        "retention_pending": sum(1 for r, source in marks.items() if source == "retention"),
+        "status": status, "floor_gb": 75,
+    })
 
 
 def segment_list(request, route_id):

@@ -432,8 +432,8 @@
 
       // the theme was changed with the toggle: give the charts the colours of the new theme.
       // The colours are edited in the settings the chart was created from (they all exist from the
-      // start) and the chart is updated. Do not assign Chart.js's own settings objects to themselves
-      // (scale.ticks = scale.ticks || {}): in the real library that recurses forever and the error
+      // start) and the chart is updated. Never assign one of Chart.js's own settings objects back to
+      // itself (the "ticks or {}" idiom): in the real library that recurses forever and the error
       // stops the update, so nothing would change.
       function applyTheme() {
         var c = theme();

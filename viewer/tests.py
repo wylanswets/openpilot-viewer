@@ -1248,11 +1248,11 @@ class DarkModeTests(TestCase):
         # In the real Chart.js, `scale.ticks = scale.ticks || {}` on chart.options recurses forever, the
         # error stops the update, and the charts keep their old colours until the page is reloaded.
         detail = (TEMPLATES_DIR / "viewer" / "drive_detail.html").read_text()
-        self.assertNotIn("scale.ticks = scale.ticks", detail)
-        self.assertNotIn("scale.grid = scale.grid", detail)
+        for faulty in ("scale.ticks = scale.ticks", "scale.grid = scale.grid", "scale.title = scale.title"):
+            self.assertFalse(faulty in detail, f"found the faulty pattern: {faulty}")
         # the colours are spelled out when the speed chart is created, so they can be changed in place
-        self.assertIn("ticks: {color: theme().text}, grid: {color: theme().grid}", detail)
-        self.assertIn("speedChart.config.options", detail)
+        self.assertTrue("ticks: {color: theme().text}, grid: {color: theme().grid}" in detail, "colours not spelled out")
+        self.assertTrue("speedChart.config.options" in detail, "recolouring must edit the original settings")
 
     def test_text_colours_in_the_dark_palette_are_readable(self):
         # WCAG contrast of the text colours against the surfaces they sit on (4.5:1 for normal text)

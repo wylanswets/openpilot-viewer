@@ -48,3 +48,12 @@ device is reachable, the script (`delete_lib.sh`) deletes those drives, records 
 the free-space cleanup. The device's own copy is never touched. Tests: `bash sync/test_delete_lib.sh`.
 
 Without `DEVICE_IP` the script stops straight away with `set DEVICE_IP to the address of the device`.
+
+## How the logs are compared
+
+The log pass compares file **sizes** only (`--size-only --modify-window=1`, `RSYNC_LOGS_COMPARE` in the
+script). The device keeps times to the nanosecond and a NAS share often only to 100 ns, so with times
+compared rsync sees every log as changed and rewrites it on every run. A log that is still growing differs
+in size, so it is still picked up. Test: `bash sync/test_rsync_options.sh`.
+
+## Deleting drives

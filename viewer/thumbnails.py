@@ -29,7 +29,7 @@ MIN_ZOOM, MAX_ZOOM = 3, 17
 TILE_MAX_AGE_S = 7 * 24 * 3600
 MAX_TILE_BYTES = 300_000
 REQUEST_INTERVAL_S = 0.5
-RECORDING_AGE_S = 10 * 60  # a newer qlog means the route is still being recorded or synced
+RECORDING_AGE_S = 10 * 60  # without a .done marker, a newer qlog means the route is still arriving
 BACKOFF_S = 10 * 60  # after a failed attempt, wait before trying again
 
 LINE_OUTLINE, LINE_COLOR = (255, 255, 255, 255), (37, 99, 235, 255)
@@ -251,7 +251,22 @@ def _write_state(thumbs_dir, route_id, state):
     os.replace(tmp, path)
 
 
-def make_thumbnail(route_id, raw_dir, metadata_dir, fetch=fetch_tile_from_osm, now=None, force=False):
+def still_arriving(raw_dir, stitched_dir, route_id, now):
+    """True while a route may still be being recorded or synced, so its image would be made too early.
+
+    The sync writes stitched/<route>/.done only after the whole route was synced and stitched
+    (and holds back the newest route while the device is driving), so that is the reliable
+    sign that a route is finished. Log file times are no use on their own: the sync rewrites
+    the logs of some routes on every run, which keeps resetting them. They are the fallback
+    for a route that has no stitched folder yet.
+    """
+    if stitched_dir is not None and (Path(stitched_dir) / route_id / ".done").is_file():
+        return False
+    return now - _newest_qlog_mtime(raw_dir, route_id) < RECORDING_AGE_S
+
+
+def make_thumbnail(route_id, raw_dir, metadata_dir, fetch=fetch_tile_from_osm, now=None, force=False,
+                   stitched_dir=None):
     """Make (or refresh) the thumbnail of a route.
 
     Returns "made", "fresh" (already up to date), "no_gps", "recording" (still being
@@ -262,7 +277,7 @@ def make_thumbnail(route_id, raw_dir, metadata_dir, fetch=fetch_tile_from_osm, n
     thumbs_dir = metadata_dir / "thumbs"
     segments = len(list(Path(raw_dir).glob(f"{route_id}--*")))
 
-    if now - _newest_qlog_mtime(raw_dir, route_id) < RECORDING_AGE_S:
+    if still_arriving(raw_dir, stitched_dir, route_id, now):
         return "recording"
 
     state = read_state(thumbs_dir, route_id)
@@ -297,7 +312,7 @@ _run_lock = threading.Lock()
 _backoff_until = 0.0
 
 
-def start_background(route_ids, raw_dir, metadata_dir, make=make_thumbnail):
+def start_background(route_ids, raw_dir, metadata_dir, make=make_thumbnail, stitched_dir=None):
     """Make thumbnails for these routes in a background thread, one run at a time.
 
     Returns the thread, or None if there is nothing to do, a run is already going, or
@@ -315,7 +330,8 @@ def start_background(route_ids, raw_dir, metadata_dir, make=make_thumbnail):
         try:
             for route_id in route_ids:
                 try:
-                    result = make(route_id, raw_dir, metadata_dir)
+                    extra = {"stitched_dir": stitched_dir} if stitched_dir is not None else {}
+                    result = make(route_id, raw_dir, metadata_dir, **extra)
                 except Exception:
                     result = "failed"
                 if result == "failed":

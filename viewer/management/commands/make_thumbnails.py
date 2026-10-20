@@ -15,7 +15,9 @@ class Command(BaseCommand):
             routes = sorted({views.normalize_route_id(d.name) for d in views.RAW_DIR.iterdir() if d.is_dir()})
         counts = {}
         for route_id in routes:
-            result = thumbnails.make_thumbnail(route_id, views.RAW_DIR, views.METADATA_DIR, force=force)
+            result = thumbnails.make_thumbnail(
+                route_id, views.RAW_DIR, views.METADATA_DIR, force=force, stitched_dir=views.STITCHED_DIR
+            )
             counts[result] = counts.get(result, 0) + 1
             self.stdout.write(f"{route_id}: {result}")
         self.stdout.write(", ".join(f"{n} {name}" for name, n in sorted(counts.items())) or "no routes")

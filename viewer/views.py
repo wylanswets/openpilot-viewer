@@ -202,7 +202,7 @@ def drive_list(request):
         if route_thumbnails.needs_work(thumbs_dir, route_id, len(raw_routes_grouped.get(route_id, []))):
             drive["thumbnail_pending"] = True
             missing.append(route_id)
-    route_thumbnails.start_background(missing, RAW_DIR, METADATA_DIR)
+    route_thumbnails.start_background(missing, RAW_DIR, METADATA_DIR, stitched_dir=STITCHED_DIR)
 
     return render(request, "viewer/drive_list.html", {
         "page_obj": page_obj,

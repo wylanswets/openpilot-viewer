@@ -616,6 +616,8 @@ class MakeThumbnailTests(TestCase):
         self.raw = root / "raw"
         self.metadata = root / "metadata"
         self.raw.mkdir()
+        self.stitched = root / "stitched"
+        self.stitched.mkdir()
         self.later = time.time() + 3600  # pretend the logs are an hour old
         self.fetched = []
 
@@ -629,6 +631,7 @@ class MakeThumbnailTests(TestCase):
     def make(self, route=None, **kwargs):
         kwargs.setdefault("now", self.later)
         kwargs.setdefault("fetch", self.fetch)
+        kwargs.setdefault("stitched_dir", self.stitched)
         return thumbnails.make_thumbnail(route or self.ROUTE, self.raw, self.metadata, **kwargs)
 
     def test_makes_a_png_and_then_leaves_it_alone(self):
@@ -657,6 +660,26 @@ class MakeThumbnailTests(TestCase):
         self.assertEqual(self.make(now=time.time()), "recording")
         self.assertEqual(self.fetched, [])
         self.assertTrue(thumbnails.needs_work(self.metadata / "thumbs", self.ROUTE, 1))
+
+    def test_a_route_the_sync_has_finished_is_made_even_if_its_logs_keep_being_rewritten(self):
+        # the sync rewrites some routes' logs on every run, so their times are always recent
+        self.segment(0, [(1, 35.0, -82.0, 5.0), (1, 35.001, -82.001, 5.0)])
+        (self.stitched / self.ROUTE).mkdir()
+        (self.stitched / self.ROUTE / ".done").touch()
+        self.assertEqual(self.make(now=time.time()), "made")
+
+    def test_a_stitched_folder_without_done_does_not_count_as_finished(self):
+        self.segment(0, [(1, 35.0, -82.0, 5.0)])
+        (self.stitched / self.ROUTE).mkdir()  # stitching under way: no .done yet
+        self.assertEqual(self.make(now=time.time()), "recording")
+
+    def test_old_logs_are_enough_when_there_is_no_stitched_folder(self):
+        self.segment(0, [(1, 35.0, -82.0, 5.0), (1, 35.001, -82.001, 5.0)])
+        self.assertEqual(self.make(), "made")
+
+    def test_without_a_stitched_folder_given_the_log_times_decide(self):
+        self.segment(0, [(1, 35.0, -82.0, 5.0)])
+        self.assertEqual(self.make(now=time.time(), stitched_dir=None), "recording")
 
     def test_route_without_gps_is_remembered(self):
         self.segment(0, [(0, 35.0, -82.0, 5.0)])

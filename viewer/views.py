@@ -347,8 +347,9 @@ def retention_page(request):
                     if wanted.policy == "off":
                         messages.success(request, "Saved: nothing is removed automatically.")
                     elif done.count:
-                        messages.success(request, f"Saved. {done.count} drives ({done.freed / 1e9:.1f} GB) are marked for removal; "
-                                                  "they are hidden now and the sync removes them within about 5 minutes.")
+                        plural = "drive is" if done.count == 1 else "drives are"
+                        messages.success(request, f"Saved. {done.count} {plural} ({done.freed / 1e9:.1f} GB) marked for removal; "
+                                                  "hidden now, and the sync removes them within about 5 minutes.")
                     else:
                         messages.success(request, f"Saved: {wanted.describe().lower()}. Nothing needs removing right now.")
                     return redirect("retention_page")

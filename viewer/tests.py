@@ -1689,6 +1689,10 @@ class RetentionPageTests(DrivesFixture, TestCase):
         self.assertEqual(len(deletion.pending(self.meta)), 2)
         self.assertContains(self.client.get(self.url), "marked for removal and waiting for the sync")
 
+    def test_the_saved_message_says_how_many_drives_in_proper_english(self):
+        self.post(action="save", confirm="1", keep_drives="2")
+        self.assertContains(self.client.get(self.url), "Saved. 1 drive is (")
+
     def test_saving_something_that_removes_nothing_needs_no_confirmation(self):
         response = self.post(action="save", policy="count", keep_drives="10")
         self.assertRedirects(response, self.url, fetch_redirect_response=False)

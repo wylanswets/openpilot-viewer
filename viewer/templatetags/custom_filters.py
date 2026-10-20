@@ -37,3 +37,13 @@ def dict_get(d, key):
 def drive_label(start_time, duration_s=None):
     """{% drive_label drive.start_time drive.duration_s %} -> Oct 20, 2026 - 5:05 PM (10 min 26 sec)"""
     return labels.drive_label(start_time, duration_s)
+
+
+@register.filter
+def gb(value):
+    """12345678901 -> '12.3 GB'; under a gigabyte -> '340 MB'."""
+    try:
+        size = float(value)
+    except (TypeError, ValueError):
+        return ""
+    return f"{size / 1e9:.1f} GB" if size >= 1e9 else f"{size / 1e6:.0f} MB"

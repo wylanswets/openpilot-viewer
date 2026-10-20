@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+{% load custom_filters %}
+
+{% block title %}Storage and retention{% endblock %}
+
+{% block content %}
+<div class="max-w-4xl mx-auto px-4 py-8">
+  <h2 class="text-2xl font-semibold mb-1">Storage and retention</h2>
+  <p class="text-sm text-gray-600 mb-6 dark:text-slate-300">Choose how long drives are kept. Drives that are removed are deleted from this server only; the copy on the device is not touched, and they are not copied from it again.</p>
+
+  <!-- Usage -->
+  <div class="bg-gray-100 rounded-xl shadow-md p-4 mb-6 dark:bg-slate-900">
+    <h3 class="text-lg font-medium mb-3">Used now</h3>
+    <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+      <div class="bg-white rounded-lg shadow-sm p-3 dark:bg-slate-800"><div class="text-xs text-gray-500 dark:text-slate-400">Drives</div><div class="text-lg font-semibold">{{ drive_count }}</div></div>
+      <div class="bg-white rounded-lg shadow-sm p-3 dark:bg-slate-800"><div class="text-xs text-gray-500 dark:text-slate-400">Space used by drives</div><div class="text-lg font-semibold">{{ total_bytes|gb }}</div></div>
+      <div class="bg-white rounded-lg shadow-sm p-3 dark:bg-slate-800"><div class="text-xs text-gray-500 dark:text-slate-400">Starred (never removed)</div><div class="text-lg font-semibold">{{ starred_count }}{% if starred_count %} ({{ starred_bytes|gb }}){% endif %}</div></div>
+      <div class="bg-white rounded-lg shadow-sm p-3 dark:bg-slate-800"><div class="text-xs text-gray-500 dark:text-slate-400">Free on the storage</div><div class="text-lg font-semibold">{% if free_bytes is not None %}{{ free_bytes|gb }}{% else %}unknown{% endif %}</div></div>
+    </div>
+    <p class="text-xs text-gray-500 mt-3 dark:text-slate-400">Sizes are raw logs plus stitched videos. {% if unfinished_count %}{{ unfinished_count }} drive{{ unfinished_count|pluralize }} still arriving {{ unfinished_count|pluralize:"is,are" }} counted but never removed. {% endif %}Whatever the setting, the sync also removes the oldest drives if free space on the storage falls below {{ floor_gb }} GB.</p>
+  </div>
+
+  <!-- Policy -->
+  <form method="post" class="bg-gray-100 rounded-xl shadow-md p-4 mb-6 dark:bg-slate-900">
+    {% csrf_token %}
+    <h3 class="text-lg font-medium mb-1">How long to keep drives</h3>
+    <p class="text-sm text-gray-600 mb-3 dark:text-slate-300">Pick one. Starred drives are never removed, and still count toward the storage limit. A drive that is still arriving is never removed.</p>
+
+    {% if errors %}
+      <div class="mb-3 px-4 py-2 rounded-md text-sm bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-200">
+        {% for error in errors %}<div>{{ error }}</div>{% endfor %}
+      </div>
+    {% endif %}
+
+    <div class="space-y-2">
+      <label class="flex items-center gap-3 bg-white rounded-lg shadow-sm p-3 dark:bg-slate-800">
+        <input type="radio" name="policy" value="off" {% if form.policy == "off" %}checked{% endif %}>
+        <span><span class="font-medium">Off</span> <span class="text-sm text-gray-500 dark:text-slate-400">- keep everything (only the free-space safety net applies)</span></span>
+      </label>
+      <label class="flex flex-wrap items-center gap-3 bg-white rounded-lg shadow-sm p-3 dark:bg-slate-800">
+        <input type="radio" name="policy" value="count" {% if form.policy == "count" %}checked{% endif %}>
+        <span class="font-medium">Keep the newest</span>
+        <input type="number" name="keep_drives" min="1" value="{{ form.keep_drives }}" class="w-24 rounded-md border border-gray-300 px-2 py-1 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100">
+        <span>drives</span>
+      </label>
+      <label class="flex flex-wrap items-center gap-3 bg-white rounded-lg shadow-sm p-3 dark:bg-slate-800">
+        <input type="radio" name="policy" value="days" {% if form.policy == "days" %}checked{% endif %}>
+        <span class="font-medium">Keep drives from the last</span>
+        <input type="number" name="keep_days" min="1" value="{{ form.keep_days }}" class="w-24 rounded-md border border-gray-300 px-2 py-1 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100">
+        <span>days</span>
+      </label>
+      <label class="flex flex-wrap items-center gap-3 bg-white rounded-lg shadow-sm p-3 dark:bg-slate-800">
+        <input type="radio" name="policy" value="storage" {% if form.policy == "storage" %}checked{% endif %}>
+        <span class="font-medium">Use at most</span>
+        <input type="number" name="keep_gb" min="1" value="{{ form.keep_gb }}" class="w-28 rounded-md border border-gray-300 px-2 py-1 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100">
+        <span>GB for drives (the oldest go first)</span>
+      </label>
+    </div>
+
+    {% if preview %}
+      <div class="mt-4 p-3 rounded-md border bg-white border-gray-200 dark:bg-slate-800 dark:border-slate-700">
+        {% if preview.plan.count %}
+          <p class="font-medium">With this setting {{ preview.plan.count }} drive{{ preview.plan.count|pluralize }} ({{ preview.plan.freed|gb }}) would be removed:</p>
+          <ul class="mt-2 text-sm space-y-1">
+            {% for d in preview.rows %}
+              <li class="flex flex-wrap gap-x-3"><span>{% drive_label d.start %}</span><span class="text-gray-500 dark:text-slate-400">{{ d.size|gb }}</span><span class="font-mono text-xs text-gray-500 dark:text-slate-400">{{ d.route_id }}</span></li>
+            {% endfor %}
+          </ul>
+          {% if preview.more %}<p class="text-sm text-gray-500 mt-1 dark:text-slate-400">... and {{ preview.more }} more.</p>{% endif %}
+          <p class="text-sm text-gray-600 mt-2 dark:text-slate-300">After that {{ preview.plan.total_after|gb }} would be used.</p>
+        {% else %}
+          <p class="font-medium">With this setting nothing would be removed right now.</p>
+        {% endif %}
+        {% if not preview.plan.limit_reached %}
+          <p class="mt-2 text-sm px-3 py-2 rounded-md bg-yellow-50 border border-yellow-200 dark:bg-yellow-950/60 dark:border-yellow-800">The limit cannot be reached: starred drives and drives that are still arriving use {{ preview.plan.total_after|gb }} on their own.</p>
+        {% endif %}
+        {% if preview.plan.count %}
+          <label class="flex items-center gap-2 mt-3 text-sm {% if need_confirm %}font-semibold{% endif %}">
+            <input type="checkbox" name="confirm" value="1">
+            I understand these {{ preview.plan.count }} drive{{ preview.plan.count|pluralize }} will be deleted from this server.
+          </label>
+          {% if need_confirm %}<p class="text-sm mt-1 text-red-600 dark:text-red-400">Tick the box to save this setting.</p>{% endif %}
+        {% endif %}
+      </div>
+    {% endif %}
+
+    <div class="mt-4 flex gap-3">
+      <button type="submit" name="action" value="preview" class="px-4 py-2 rounded-md bg-gray-200 hover:bg-gray-300 dark:bg-slate-700 dark:hover:bg-slate-600">Preview</button>
+      <button type="submit" name="action" value="save" class="px-4 py-2 rounded-md bg-blue-600 text-white hover:bg-blue-700">Save</button>
+    </div>
+    <p class="text-xs text-gray-500 mt-2 dark:text-slate-400">Saved now: <strong>{{ saved.describe }}</strong>. Preview shows what a setting would remove without changing anything.</p>
+  </form>
+
+  <!-- What happened -->
+  <div class="bg-gray-100 rounded-xl shadow-md p-4 dark:bg-slate-900">
+    <h3 class="text-lg font-medium mb-2">What it has done</h3>
+    {% if retention_pending %}<p class="text-sm mb-2">{{ retention_pending }} drive{{ retention_pending|pluralize }} {{ retention_pending|pluralize:"is,are" }} marked for removal and waiting for the sync (it runs every 5 minutes).</p>{% endif %}
+    {% if status.last_run %}
+      <p class="text-sm text-gray-600 dark:text-slate-300">Last check: {{ status.last_run }} UTC ({{ status.describe }}), {{ status.last_count }} drive{{ status.last_count|pluralize }} marked.</p>
+      {% if status.runs %}
+        <ul class="mt-2 text-sm space-y-1">
+          {% for run in status.runs %}<li>{{ run.at }} UTC: {{ run.count }} drive{{ run.count|pluralize }} ({{ run.bytes|gb }}) marked for removal ({{ run.policy }})</li>{% endfor %}
+        </ul>
+      {% else %}
+        <p class="text-sm text-gray-500 mt-1 dark:text-slate-400">Nothing has been removed by this setting yet.</p>
+      {% endif %}
+    {% else %}
+      <p class="text-sm text-gray-500 dark:text-slate-400">The setting has not run yet. It checks every 10 minutes and right after you save.</p>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

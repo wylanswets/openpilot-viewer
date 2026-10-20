@@ -32,10 +32,28 @@ def pending(metadata_dir):
         return set()
 
 
-def request_delete(route_id, metadata_dir):
+def request_delete(route_id, metadata_dir, source="manual"):
+    """Ask for a drive to be deleted. `source` is "manual" (the Delete button: an empty file) or
+    "retention" (the retention setting: the file says so). The sync only looks at the file name."""
     directory = requests_dir(metadata_dir)
     directory.mkdir(parents=True, exist_ok=True)
-    (directory / route_id).touch()
+    marker = directory / route_id
+    if source == "manual":
+        marker.touch()
+    else:
+        marker.write_text(source)
+
+
+def pending_by_source(metadata_dir):
+    """{route id: "manual" or "retention"} for everything waiting to be deleted."""
+    result = {}
+    for route_id in pending(metadata_dir):
+        try:
+            text = (requests_dir(metadata_dir) / route_id).read_text().strip()
+        except OSError:
+            text = ""
+        result[route_id] = text or "manual"
+    return result
 
 
 def cancel(route_id, metadata_dir):

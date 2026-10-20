@@ -4,6 +4,7 @@ from . import views
 urlpatterns = [
     path("drive/<str:route_id>/toggle_preserve/", views.toggle_preserve, name="toggle_preserve"),
     path("", views.drive_list, name="drive_list"),
+    path("storage/", views.retention_page, name="retention_page"),
     path("drive/<str:route_id>/", views.drive_detail, name="drive_detail"),
     path("drive/<str:route_id>/track.json", views.drive_track, name="drive_track"),
     path("drive/<str:route_id>/summary.json", views.drive_summary, name="drive_summary"),

@@ -25,10 +25,11 @@ T=$(mktemp -d); S=$T/stitched; export LOG_FILE=$T/fix.log LOCK_FILE=$T/lock
 tag()  { ffprobe -v error -select_streams v:0 -show_entries stream=codec_tag_string -of csv=p=0 "$1"; }
 dur()  { ffprobe -v error -show_entries format=duration -of csv=p=0 "$1"; }
 frames() { ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of csv=p=0 "$1"; }
-moov_first() { head -c 65536 "$1" | grep -c -a moov; }
+# order of the index (moov) and the picture data (mdat) in the file: "moov mdat" = index first
+box_order() { grep -abo -E 'moov|mdat' "$1" | head -2 | cut -d: -f2 | tr '\n' ' ' | sed 's/ $//'; }
 make_video() { # make_video file tag
     ffmpeg -y -loglevel error -f lavfi -i "testsrc=size=320x240:rate=20:duration=3" -c:v libx265 -pix_fmt yuv420p \
-        -x265-params log-level=none -tag:v "$2" "$1"; }
+        -x265-params log-level=none -tag:v "$2" "$1" 2>/dev/null; }
 run() { bash "$HERE/fix_video_tags.sh" "$@" >/dev/null 2>&1; }
 
 mkdir -p "$S/A" "$S/B" "$S/C" "$S/D"
@@ -36,7 +37,7 @@ make_video "$S/A/fcamera.mp4" hev1; touch "$S/A/.done"; touch -d "2026-10-01 12:
 make_video "$S/B/fcamera.mp4" hev1                                   # no .done: still being stitched
 make_video "$S/C/fcamera.mp4" hvc1; touch "$S/C/.done"               # already fine
 make_video "$S/D/fcamera.mp4" hev1; touch "$S/D/.done"
-check "(setup) the test video starts as hev1 with the index at the end" bash -c "[ '$(tag $S/A/fcamera.mp4)' = hev1 ] && [ $(moov_first $S/A/fcamera.mp4) -eq 0 ]"
+check "(setup) the test video starts as hev1 with the index at the end" bash -c "[ '$(tag $S/A/fcamera.mp4)' = hev1 ] && [ '$(box_order $S/A/fcamera.mp4)' = 'mdat moov' ]"
 frames_before=$(frames "$S/A/fcamera.mp4"); dur_before=$(dur "$S/A/fcamera.mp4")
 b_hash=$(sha256sum "$S/B/fcamera.mp4" | cut -d' ' -f1); c_inode=$(stat -c %i "$S/C/fcamera.mp4"); d_hash=$(sha256sum "$S/D/fcamera.mp4" | cut -d' ' -f1)
 
@@ -49,7 +50,7 @@ check "...and says what it would do" grep -q "DRY RUN: would repackage A/fcamera
 run "$S"; rc=$?
 check "the run succeeds" test $rc -eq 0
 check "a finished route's video is now hvc1" test "$(tag "$S/A/fcamera.mp4")" = hvc1
-check "its index is at the front" test "$(moov_first "$S/A/fcamera.mp4")" -eq 1
+check "its index is at the front" test "$(box_order "$S/A/fcamera.mp4")" = "moov mdat"
 check "same duration" bash -c "awk -v a=$dur_before -v b=$(dur $S/A/fcamera.mp4) 'BEGIN{d=a-b; if(d<0)d=-d; exit !(d<=0.1)}'"
 check "same number of frames (nothing re-encoded or dropped)" test "$(frames "$S/A/fcamera.mp4")" = "$frames_before"
 check "the file time is kept" test "$(stat -c %Y "$S/A/fcamera.mp4")" = "$(date -d '2026-10-01 12:00:00' +%s)"

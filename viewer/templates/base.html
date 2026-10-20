@@ -3,12 +3,70 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light dark">
   <title>{% block title %}OpenPilot Viewer{% endblock %}</title>
+  <!-- Theme: Auto (follows the system), Light or Dark, remembered in the browser. This runs before
+       the page is painted so there is no flash of the wrong theme. -->
+  <script id="theme-script">
+    (function () {
+      var KEY = "theme", root = document.documentElement;
+      var media = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
+      function stored() {
+        try {
+          var v = localStorage.getItem(KEY);
+          return v === "light" || v === "dark" ? v : "auto";
+        } catch (e) { return "auto"; }
+      }
+      function isDark(mode) { return mode === "dark" || (mode === "auto" && !!media && media.matches); }
+      function mark(mode) {
+        document.querySelectorAll("[data-theme-choice]").forEach(function (b) {
+          b.setAttribute("aria-pressed", b.getAttribute("data-theme-choice") === mode ? "true" : "false");
+        });
+      }
+      function apply(mode) {
+        var dark = isDark(mode);
+        root.classList.toggle("dark", dark);
+        root.style.colorScheme = dark ? "dark" : "light";
+        root.setAttribute("data-theme-mode", mode);
+        mark(mode);
+        window.dispatchEvent(new CustomEvent("themechange", {detail: {dark: dark, mode: mode}}));
+      }
+      function choose(mode) {
+        try {
+          if (mode === "auto") localStorage.removeItem(KEY); else localStorage.setItem(KEY, mode);
+        } catch (e) { /* private mode: the choice just is not remembered */ }
+        apply(mode);
+      }
+      window.setTheme = choose;
+      apply(stored());
+      if (media && media.addEventListener) {
+        media.addEventListener("change", function () { if (stored() === "auto") apply("auto"); });
+      }
+      document.addEventListener("DOMContentLoaded", function () {
+        document.querySelectorAll("[data-theme-choice]").forEach(function (b) {
+          b.addEventListener("click", function () { choose(b.getAttribute("data-theme-choice")); });
+        });
+        mark(stored());
+      });
+    })();
+  </script>
+  <style>
+    html.dark { color-scheme: dark; }
+    /* the route map on the drive page: a dimmed "night" version of the light OpenStreetMap tiles */
+    html.dark .leaflet-tile-pane { filter: invert(1) hue-rotate(180deg) brightness(0.95) contrast(0.9); }
+    html.dark .leaflet-container { background: #0f172a; }
+    html.dark .leaflet-bar a, html.dark .leaflet-bar a:hover { background-color: #1e293b; color: #e2e8f0; border-bottom-color: #334155; }
+    html.dark .leaflet-control-attribution { background: rgba(15, 23, 42, 0.8) !important; color: #94a3b8 !important; }
+    html.dark .leaflet-control-attribution a { color: #7dd3fc !important; }
+    /* the map images in the drive list are made from the light tiles: dim them a little */
+    html.dark img[alt="Map of the route"] { filter: brightness(0.8) contrast(1.05); }
+  </style>
   <!-- Tailwind CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/heroicons@2.0.18/dist/heroicons.min.js"></script>
   <script>
     tailwind.config = {
+      darkMode: 'class',
       theme: {
         extend: {
           colors: {
@@ -19,7 +77,7 @@
     }
   </script>
 </head>
-<body class="bg-gray-100 text-gray-800 font-sans">
+<body class="bg-gray-100 text-gray-800 font-sans dark:bg-slate-950 dark:text-slate-200">
 
 <div id="toast"
        class="fixed bottom-4 right-4 bg-gray-800 text-white px-3 py-2 rounded shadow-lg text-sm hidden z-50">
@@ -80,11 +138,20 @@
   </script>
 
   <!-- Navbar / Header -->
-  <header class="bg-white shadow-md py-4 mb-6">
+  <header class="bg-white shadow-md py-4 mb-6 dark:bg-slate-900">
     <div class="max-w-6xl mx-auto px-4 flex justify-between items-center">
-      <h1 class="text-xl font-semibold text-gray-900">OpenPilot Viewer</h1>
-      <nav>
-        <a href="{% url 'drive_list' %}" class="text-blue-600 hover:underline">Drives</a>
+      <h1 class="text-xl font-semibold text-gray-900 dark:text-slate-100">OpenPilot Viewer</h1>
+      <nav class="flex items-center gap-4">
+        <a href="{% url 'drive_list' %}" class="text-blue-600 hover:underline dark:text-sky-400">Drives</a>
+        <div id="theme-toggle" role="group" aria-label="Colour theme"
+             class="inline-flex rounded-md overflow-hidden border border-gray-300 text-xs dark:border-slate-600">
+          <button type="button" data-theme-choice="auto" aria-pressed="true" title="Follow the system setting"
+                  class="px-2 py-1 bg-white text-gray-700 hover:bg-gray-200 aria-pressed:bg-gray-200 aria-pressed:font-semibold aria-pressed:text-gray-900 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700 dark:aria-pressed:bg-slate-600 dark:aria-pressed:text-slate-100">Auto</button>
+          <button type="button" data-theme-choice="light" aria-pressed="false" title="Light theme"
+                  class="px-2 py-1 border-l border-gray-300 bg-white text-gray-700 hover:bg-gray-200 aria-pressed:bg-gray-200 aria-pressed:font-semibold aria-pressed:text-gray-900 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700 dark:aria-pressed:bg-slate-600 dark:aria-pressed:text-slate-100">Light</button>
+          <button type="button" data-theme-choice="dark" aria-pressed="false" title="Dark theme"
+                  class="px-2 py-1 border-l border-gray-300 bg-white text-gray-700 hover:bg-gray-200 aria-pressed:bg-gray-200 aria-pressed:font-semibold aria-pressed:text-gray-900 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700 dark:aria-pressed:bg-slate-600 dark:aria-pressed:text-slate-100">Dark</button>
+        </div>
       </nav>
     </div>
   </header>
@@ -94,7 +161,7 @@
     {% if messages %}
       <div class="mb-4 space-y-2">
         {% for message in messages %}
-          <div class="px-4 py-2 rounded-md text-sm {% if message.level_tag == 'error' %}bg-red-100 text-red-800{% elif message.level_tag == 'warning' %}bg-yellow-100 text-yellow-800{% elif message.level_tag == 'success' %}bg-green-100 text-green-800{% else %}bg-blue-100 text-blue-800{% endif %}">{{ message }}</div>
+          <div class="px-4 py-2 rounded-md text-sm {% if message.level_tag == 'error' %}bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-200{% elif message.level_tag == 'warning' %}bg-yellow-100 text-yellow-800 dark:bg-yellow-950 dark:text-yellow-200{% elif message.level_tag == 'success' %}bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-200{% else %}bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-200{% endif %}">{{ message }}</div>
         {% endfor %}
       </div>
     {% endif %}

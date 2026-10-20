@@ -1140,3 +1140,135 @@ class PrepareRouteTests(TestCase):
             stitched_dir=self.stitched)
         thread.join(5)
         self.assertEqual(seen, [self.stitched])
+
+
+# ----------------------
+# Dark mode
+# ----------------------
+
+TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
+ALL_TEMPLATES = [TEMPLATES_DIR / "base.html"] + sorted((TEMPLATES_DIR / "viewer").glob("*.html"))
+
+# light utility -> the dark utility it must be paired with (same table the dark classes were added with)
+DARK_PAIRS = {
+    "bg-gray-100": "dark:bg-slate-900", "bg-white": "dark:bg-slate-800", "bg-gray-50": "dark:bg-slate-800",
+    "bg-gray-200": "dark:bg-slate-700", "bg-gray-300": "dark:bg-slate-600",
+    "hover:bg-gray-50": "dark:hover:bg-slate-700", "hover:bg-gray-200": "dark:hover:bg-slate-700",
+    "hover:bg-gray-300": "dark:hover:bg-slate-600",
+    "text-gray-900": "dark:text-slate-100", "text-gray-800": "dark:text-slate-200", "text-gray-700": "dark:text-slate-300",
+    "text-gray-600": "dark:text-slate-300", "text-gray-500": "dark:text-slate-400", "text-gray-400": "dark:text-slate-400",
+    "text-blue-600": "dark:text-sky-400", "hover:text-blue-600": "dark:hover:text-sky-400",
+    "text-indigo-600": "dark:text-indigo-400",
+    "border-gray-100": "dark:border-slate-800", "border-gray-200": "dark:border-slate-700", "border-gray-300": "dark:border-slate-600",
+    "bg-red-100": "dark:bg-red-950", "text-red-800": "dark:text-red-200", "text-red-600": "dark:text-red-400",
+    "bg-red-50": "dark:bg-red-950/50", "border-red-100": "dark:border-red-900",
+    "bg-green-100": "dark:bg-green-950", "text-green-800": "dark:text-green-200", "text-green-700": "dark:text-green-300",
+    "border-green-200": "dark:border-green-800",
+    "bg-yellow-100": "dark:bg-yellow-950", "text-yellow-800": "dark:text-yellow-200",
+    "bg-yellow-50": "dark:bg-yellow-950/60", "border-yellow-200": "dark:border-yellow-800",
+    "bg-blue-100": "dark:bg-blue-950", "text-blue-800": "dark:text-blue-200",
+    "bg-indigo-50": "dark:bg-indigo-950/50", "group-hover:bg-indigo-100": "dark:group-hover:bg-indigo-900/60",
+    "hover:border-indigo-300": "dark:hover:border-indigo-500",
+}
+
+
+class DarkModeTests(TestCase):
+    def test_every_light_colour_has_a_dark_counterpart(self):
+        import re
+        quoted = re.compile(r'"([^"\n]*)"')
+        problems = []
+        for path in ALL_TEMPLATES:
+            for match in quoted.finditer(path.read_text()):
+                tokens = match.group(1).split()
+                for light, dark in DARK_PAIRS.items():
+                    if light in tokens and dark not in tokens:
+                        problems.append(f"{path.name}: {light} without {dark} in: {match.group(1)[:70]}")
+        self.assertEqual(problems, [])
+
+    def test_the_page_and_header_are_dark_in_dark_mode(self):
+        base = (TEMPLATES_DIR / "base.html").read_text()
+        self.assertIn("dark:bg-slate-950", base)  # the page is the darkest layer
+        self.assertRegex(base, r'<header class="[^"]*dark:bg-slate-900')
+
+    def test_tailwind_is_set_to_dark_mode_by_class(self):
+        base = (TEMPLATES_DIR / "base.html").read_text()
+        self.assertIn("darkMode: 'class'", base)
+        self.assertIn('name="color-scheme" content="light dark"', base)
+
+    def test_the_theme_script_runs_before_the_page_is_painted(self):
+        base = (TEMPLATES_DIR / "base.html").read_text()
+        self.assertLess(base.index('id="theme-script"'), base.index("cdn.tailwindcss.com"))
+        self.assertLess(base.index('id="theme-script"'), base.index("</head>"))
+        self.assertLess(base.index("</head>"), base.index("<body"))
+
+    def test_the_toggle_is_on_the_top_bar_next_to_drives_on_every_page(self):
+        from django.template.loader import render_to_string
+        for template in ("viewer/error.html", "viewer/segment_list.html", "viewer/drive_list.html"):
+            html = render_to_string(template, {"message": "x", "route_id": "r", "segments": [], "page_obj": [], "preserved_routes": set(),
+                                               "pending_deletes": [], "show_preserved_only": False})
+            nav = html[html.index("<nav"):html.index("</nav>")]
+            self.assertIn(">Drives<", nav, template)
+            for choice in ("auto", "light", "dark"):
+                self.assertIn(f'data-theme-choice="{choice}"', nav, template)
+
+    def test_the_map_is_dimmed_in_dark_mode_and_the_list_images_match_the_rule(self):
+        base = (TEMPLATES_DIR / "base.html").read_text()
+        self.assertIn("html.dark .leaflet-tile-pane { filter:", base)
+        self.assertIn('html.dark img[alt="Map of the route"] { filter:', base)
+        # the rule only works while the images keep this alt text
+        self.assertIn('alt="Map of the route"', (TEMPLATES_DIR / "viewer" / "drive_list.html").read_text())
+
+    def test_dark_form_fields_on_the_log_page(self):
+        log = (TEMPLATES_DIR / "viewer" / "log_detail.html").read_text()
+        self.assertEqual(log.count("dark:bg-slate-900 dark:text-slate-100"), 2)  # the select and the search box
+
+    def test_the_drive_page_graphics_use_theme_colours(self):
+        detail = (TEMPLATES_DIR / "viewer" / "drive_detail.html").read_text()
+        for needle in ("THEME_COLORS", 'addEventListener("themechange"', "theme().band", "theme().label", "theme().line"):
+            self.assertIn(needle, detail)
+
+    def test_text_colours_in_the_dark_palette_are_readable(self):
+        # WCAG contrast of the text colours against the surfaces they sit on (4.5:1 for normal text)
+        hexes = {
+            "slate-950": "#020617", "slate-900": "#0f172a", "slate-800": "#1e293b", "slate-700": "#334155",
+            "slate-100": "#f1f5f9", "slate-200": "#e2e8f0", "slate-300": "#cbd5e1", "slate-400": "#94a3b8",
+            "sky-400": "#38bdf8", "indigo-400": "#818cf8", "green-300": "#86efac", "red-400": "#f87171",
+            "red-200": "#fecaca", "green-200": "#bbf7d0", "yellow-200": "#fef08a", "blue-200": "#bfdbfe",
+            "red-950": "#450a0a", "green-950": "#052e16", "yellow-950": "#422006", "blue-950": "#172554",
+        }
+
+        def luminance(color):
+            def channel(v):
+                v /= 255
+                return v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4
+            r, g, b = (int(color[i:i + 2], 16) for i in (1, 3, 5))
+            return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+
+        def contrast(fg, bg):
+            a, b = sorted((luminance(hexes[fg]), luminance(hexes[bg])), reverse=True)
+            return (a + 0.05) / (b + 0.05)
+
+        pairs = [(fg, bg) for fg in ("slate-100", "slate-200", "slate-300", "slate-400")
+                 for bg in ("slate-950", "slate-900", "slate-800")]
+        pairs += [("slate-200", "slate-700"), ("slate-300", "slate-700"),            # buttons and pills
+                  ("sky-400", "slate-950"), ("sky-400", "slate-900"), ("sky-400", "slate-800"),   # links
+                  ("indigo-400", "slate-900"), ("indigo-400", "slate-800"),
+                  ("green-300", "slate-800"), ("red-400", "slate-800"),
+                  ("red-200", "red-950"), ("green-200", "green-950"),                # status banners
+                  ("yellow-200", "yellow-950"), ("blue-200", "blue-950")]
+        weak = [(fg, bg, round(contrast(fg, bg), 1)) for fg, bg in pairs if contrast(fg, bg) < 4.5]
+        self.assertEqual(weak, [])
+        # the muted grey that was rejected: documents why text-gray-400/500 map to slate-400, not slate-500
+        hexes["slate-500"] = "#64748b"
+        self.assertLess(contrast("slate-500", "slate-900"), 4.5)
+
+    def test_the_browser_script_tests_pass(self):
+        import shutil
+        import subprocess
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("node is not installed here")
+        tests = Path(__file__).resolve().parent / "tests_js"
+        for name in ("theme.test.js", "graphs_theme.test.js"):
+            result = subprocess.run([node, str(tests / name)], capture_output=True, text=True, timeout=60)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

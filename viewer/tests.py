@@ -1179,11 +1179,28 @@ class DarkModeTests(TestCase):
         problems = []
         for path in ALL_TEMPLATES:
             for match in quoted.finditer(path.read_text()):
-                tokens = match.group(1).split()
+                text = match.group(1)
+                # split on whitespace and on template markers, so '{% if x %}bg-red-100' gives bg-red-100
+                tokens = [token for token in re.split(r"[\s{}%]+", text) if token]
                 for light, dark in DARK_PAIRS.items():
+                    if "font-sans" in text and light == "bg-gray-100":
+                        dark = "dark:bg-slate-950"   # the page itself is the darkest layer
+                    if "shadow-md py-4" in text and light == "bg-white":
+                        dark = "dark:bg-slate-900"   # the header sits above the page
                     if light in tokens and dark not in tokens:
-                        problems.append(f"{path.name}: {light} without {dark} in: {match.group(1)[:70]}")
+                        problems.append(f"{path.name}: {light} without {dark} in: {text[:70]}")
         self.assertEqual(problems, [])
+
+    def test_the_check_would_notice_a_missing_dark_class(self):
+        # guard for the test above: a light colour on its own is reported
+        import re
+        text = "px-4 bg-white text-gray-800"
+        tokens = [token for token in re.split(r"[\s{}%]+", text) if token]
+        self.assertTrue("bg-white" in tokens and "dark:bg-slate-800" not in tokens)
+        banner = "{% if x == 'error' %}bg-red-100 text-red-800 dark:bg-red-950{% endif %}"
+        tokens = [token for token in re.split(r"[\s{}%]+", banner) if token]
+        self.assertIn("bg-red-100", tokens)
+        self.assertNotIn("dark:text-red-200", tokens)
 
     def test_the_page_and_header_are_dark_in_dark_mode(self):
         base = (TEMPLATES_DIR / "base.html").read_text()

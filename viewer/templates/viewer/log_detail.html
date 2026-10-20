@@ -6,26 +6,26 @@
 <div class="max-w-7xl mx-auto px-4 py-8">
     <div class="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
         <div>
-            <nav class="flex text-sm text-gray-500 mb-2" aria-label="Breadcrumb">
-                <a href="{% url 'drive_list' %}" class="hover:text-blue-600">Drives</a>
+            <nav class="flex text-sm text-gray-500 mb-2 dark:text-slate-400" aria-label="Breadcrumb">
+                <a href="{% url 'drive_list' %}" class="hover:text-blue-600 dark:hover:text-sky-400">Drives</a>
                 <span class="mx-2">/</span>
-                <a href="{% url 'drive_detail' route_id %}" class="hover:text-blue-600 font-mono">{{ route_id|truncatechars:20 }}</a>
+                <a href="{% url 'drive_detail' route_id %}" class="hover:text-blue-600 font-mono dark:hover:text-sky-400">{{ route_id|truncatechars:20 }}</a>
                 <span class="mx-2">/</span>
-                <span class="text-gray-900">Segment {{ segment_num }}</span>
+                <span class="text-gray-900 dark:text-slate-100">Segment {{ segment_num }}</span>
             </nav>
-            <h2 class="text-2xl font-bold text-gray-900">Raw Log Explorer</h2>
+            <h2 class="text-2xl font-bold text-gray-900 dark:text-slate-100">Raw Log Explorer</h2>
         </div>
         <div class="flex gap-3">
-            <a href="{% url 'segment_list' route_id %}" class="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md shadow-sm hover:bg-gray-50">
+            <a href="{% url 'segment_list' route_id %}" class="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md shadow-sm hover:bg-gray-50 dark:text-slate-300 dark:bg-slate-800 dark:border-slate-600 dark:hover:bg-slate-700">
                 ← Back to Segments
             </a>
         </div>
     </div>
 
-    <div class="bg-white rounded-t-xl border border-gray-200 p-4 shadow-sm flex flex-wrap gap-4 items-end">
+    <div class="bg-white rounded-t-xl border border-gray-200 p-4 shadow-sm flex flex-wrap gap-4 items-end dark:bg-slate-800 dark:border-slate-700">
         <div class="w-full md:w-64">
-            <label for="typeFilter" class="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1">Filter by Message Type</label>
-            <select id="typeFilter" onchange="location.href='?type=' + this.value" class="block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm">
+            <label for="typeFilter" class="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1 dark:text-slate-400">Filter by Message Type</label>
+            <select id="typeFilter" onchange="location.href='?type=' + this.value" class="block w-full rounded-md border-gray-300 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm dark:border-slate-600">
                 <option value="none" {% if active_filter == 'none' %}selected{% endif %}> </option>
                 
                 <optgroup label="Available Types">
@@ -39,20 +39,20 @@
         </div>
 
         <div class="flex-1 min-w-[250px]">
-            <label for="searchInput" class="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1">Search Inside Data</label>
+            <label for="searchInput" class="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1 dark:text-slate-400">Search Inside Data</label>
             <div class="relative">
                 <input type="text" id="searchInput" onkeyup="filterLogs()" placeholder="Search values, keys, or timestamps..." 
-                       class="block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm pl-9">
+                       class="block w-full rounded-md border-gray-300 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm pl-9 dark:border-slate-600">
                 <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                    <svg class="h-4 w-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <svg class="h-4 w-4 text-gray-400 dark:text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
                     </svg>
                 </div>
             </div>
         </div>
 
-        <div class="text-xs text-gray-400 font-mono pb-2">
-            Showing <span id="visibleCount" class="font-bold text-indigo-600">{{ events|length }}</span> / {{ events|length }} events
+        <div class="text-xs text-gray-400 font-mono pb-2 dark:text-slate-400">
+            Showing <span id="visibleCount" class="font-bold text-indigo-600 dark:text-indigo-400">{{ events|length }}</span> / {{ events|length }} events
         </div>
     </div>
 

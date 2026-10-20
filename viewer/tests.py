@@ -1469,7 +1469,9 @@ class RetentionSettingsTests(TestCase):
         self.assertIn("500 GB", retention.Settings("storage").describe())
 
 
-class RetentionDrivesTests(TestCase):
+class DrivesFixture:
+    """Temp raw / stitched / metadata folders and helpers to make drives in them."""
+
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -1492,6 +1494,8 @@ class RetentionDrivesTests(TestCase):
         start = kw.pop("start", lambda route: NOW)
         return {d.route_id: d for d in retention.collect_drives(self.raw, self.stitched, kw.pop("starred", set()), start, **kw)}
 
+
+class RetentionDrivesTests(DrivesFixture, TestCase):
     def test_dir_size_adds_up_nested_files(self):
         (self.raw / "a" / "b").mkdir(parents=True)
         (self.raw / "a" / "one").write_bytes(b"1" * 10)
@@ -1540,8 +1544,7 @@ class RetentionDrivesTests(TestCase):
         drives = self.collect(start=lambda route: _dt.datetime(1900, 1, 1))
         self.assertIsNone(drives["0000000a--aaaaaaaaaa"].start)
 
-
-class RetentionEnforceTests(RetentionDrivesTests):
+class RetentionEnforceTests(DrivesFixture, TestCase):
     def enforce(self, now=NOW, starred=()):
         starts = {"0000000a--aaaaaaaaaa": NOW - _dt.timedelta(days=40), "0000000b--bbbbbbbbbb": NOW - _dt.timedelta(days=30),
                   "0000000c--cccccccccc": NOW - _dt.timedelta(days=20), "0000000d--dddddddddd": NOW - _dt.timedelta(days=10)}
@@ -1587,16 +1590,16 @@ class RetentionEnforceTests(RetentionDrivesTests):
         self.assertEqual(again.count, 0)
         self.assertEqual(len(deletion.pending(self.meta)), 2)
 
-    def test_drives_already_on_their_way_out_free_budget_in_the_calculation(self):
-        deletion.request_delete("0000000a--aaaaaaaaaa", self.meta)       # the Delete button was used
-        self.set_policy("storage", keep_gb=1)
-        sizes = {d.route_id: d.size for d in retention.collect_drives(self.raw, self.stitched, set(), lambda r: NOW)}
+    def test_drives_already_on_their_way_out_no_longer_use_the_budget(self):
+        # four drives of 6 KB each; a limit that needs two of them gone. The Delete button was already
+        # used on one, so only one more is needed.
+        deletion.request_delete("0000000a--aaaaaaaaaa", self.meta)
         retention.save_settings(self.meta, retention.Settings("storage", keep_gb=1))
-        # with the limit far above what is left, only the manual request is pending
-        total_left = sum(size for route, size in sizes.items() if route != "0000000a--aaaaaaaaaa")
-        self.assertLess(total_left, 10 ** 9)
-        self.assertEqual(self.enforce().count, 0)
-        self.assertEqual(deletion.pending_by_source(self.meta), {"0000000a--aaaaaaaaaa": "manual"})
+        with mock.patch.object(retention, "GB", 12_000 // 1):   # keep_gb=1 means a 12,000 byte limit here
+            result = self.enforce()
+        self.assertEqual(removed(result), ["0000000b--bbbbbbbbbb"])
+        self.assertEqual(deletion.pending_by_source(self.meta),
+                         {"0000000a--aaaaaaaaaa": "manual", "0000000b--bbbbbbbbbb": "retention"})
 
     def test_it_records_what_it_did(self):
         self.set_policy("count")
@@ -1631,7 +1634,7 @@ class RetentionEnforceTests(RetentionDrivesTests):
         self.assertNotIn("0000000a--aaaaaaaaaa", deletion.pending(self.meta))
 
 
-class RetentionPageTests(RetentionDrivesTests):
+class RetentionPageTests(DrivesFixture, TestCase):
     def setUp(self):
         super().setUp()
         for target, name, value in (
@@ -1661,7 +1664,6 @@ class RetentionPageTests(RetentionDrivesTests):
         self.assertContains(response, "Used now")
         for value in ("off", "count", "days", "storage"):
             self.assertContains(response, f'name="policy" value="{value}"')
-        self.assertContains(response, "Nothing has been removed by this setting yet.") if False else None
         self.assertEqual(response.context["drive_count"], 3)
 
     def test_the_top_bar_links_to_the_page(self):
@@ -1716,8 +1718,9 @@ class RetentionPageTests(RetentionDrivesTests):
     def test_the_storage_preview_says_when_the_limit_cannot_be_reached(self):
         (self.meta / "preserved_routes.json").write_text('["0000000a--aaaaaaaaaa","0000000b--bbbbbbbbbb","0000000c--cccccccccc"]')
         response = self.post(action="preview", policy="storage", keep_gb="1")
-        self.assertContains(response, "The limit cannot be reached") if False else None
         self.assertEqual(response.context["preview"]["plan"].count, 0)
+        self.assertFalse(response.context["preview"]["plan"].limit_reached)
+        self.assertContains(response, "The limit cannot be reached")
 
     def test_drives_removed_by_the_setting_are_hidden_without_an_undo(self):
         self.post(action="save", confirm="1")

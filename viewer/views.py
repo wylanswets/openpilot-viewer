@@ -14,7 +14,7 @@ from django.shortcuts import render, redirect
 from django.urls import reverse
 from django.core.paginator import Paginator
 
-from django.views.decorators.http import require_POST
+from django.views.decorators.http import require_http_methods, require_POST
 from django.contrib import messages
 import shutil
 
@@ -321,6 +321,7 @@ def drive_thumbnail(request, route_id):
     return response
 
 
+@require_http_methods(["GET", "POST"])
 def retention_page(request):
     """Storage and retention: usage, the policy for how long drives are kept, a preview, what happened last."""
     saved = retention.load_settings(METADATA_DIR)

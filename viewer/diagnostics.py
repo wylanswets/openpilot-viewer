@@ -18,7 +18,7 @@ G = 9.80665                 # m/s2 per g
 MOVING_MPS = 1.0            # "moving" means faster than this
 LEAD_MIN_SPEED_MPS = 5.0    # radar readings below this speed (11 mph) are ignored: parking lots, glitches
 HARD_BRAKE_MPS2 = 3.0       # braking harder than this (0.31 g) is a hard-braking event
-LOW_VOLTAGE_MV = 13000      # the alternator keeps the battery above this while the car is running
+LOW_VOLTAGE_MV = 12000      # while driving the supply should stay above this (Honda lowers it to ~12.5 V on purpose)
 
 # how often each message arrives in a qlog, in seconds (observed on real recordings)
 NOMINAL_DT = {"carState": 0.1, "pandaStates": 0.1, "peripheralState": 0.5, "deviceState": 0.5,
@@ -388,12 +388,19 @@ def _temp(c):
 
 
 def _printable(hexstr):
+    """The version as text, or None when the bytes are not plain text."""
     try:
-        raw = bytes.fromhex(hexstr)
-    except ValueError:
-        return hexstr
-    text = raw.decode("ascii", "replace").strip("\x00 ")
-    return text if text and all(32 <= ord(ch) < 127 for ch in text) else hexstr
+        text = bytes.fromhex(hexstr).decode("ascii").strip("\x00 ")
+    except (ValueError, UnicodeDecodeError):
+        return None
+    return text if text and text.isprintable() else None
+
+
+def _modules(records):
+    """[label, version] per module; a module's records that are not text are left out when it has a readable one."""
+    parsed = [(ecu, brand, _printable(fw), fw) for ecu, brand, fw in (records or [])]
+    readable = {ecu for ecu, _, text, _ in parsed if text}
+    return [[f"{ecu} ({brand})", text or fw] for ecu, brand, text, fw in parsed if text or ecu not in readable]
 
 
 def present(m, expected=0, found=None):
@@ -416,8 +423,8 @@ def present(m, expected=0, found=None):
         {"title": "Steering", "rows": rows(
             ("Wheel angle range", f"{m['angle_min']:.0f}° to {m['angle_max']:.0f}°" if m.get("angle_min") is not None else None),
             ("Fastest wheel movement", f"{m['rate_max']:.0f}°/s" if m.get("rate_max") is not None else None),
-            ("Strongest driver torque", f"{m['torque_max']:.1f}" if m.get("torque_max") is not None else None),
-            ("Strongest steering command", f"{m['eps_cmd_max']:.0f}" if m.get("eps_cmd_max") is not None else None),
+            ("Strongest driver torque (raw units)", f"{m['torque_max']:.0f}" if m.get("torque_max") is not None else None),
+            ("Strongest steering command (raw units)", f"{m['eps_cmd_max']:.0f}" if m.get("eps_cmd_max") is not None else None),
             ("Highest sideways acceleration", _g(m["lat_acc_max"]) if m.get("lat_acc_max") is not None else None),
             ("Steering at its limit", _dur(m["sat_s"])),
             ("Steering temporarily unavailable", f"{_dur(m['eps_fault']['total'])} (longest {_dur(m['eps_fault']['longest'])})"))},
@@ -435,14 +442,14 @@ def present(m, expected=0, found=None):
             ("Lowest while moving", f"{volt['moving_min'] / 1000:.1f} V" if volt.get("moving_min") else None),
             ("Lowest overall", f"{volt['min'] / 1000:.1f} V" if volt.get("min") else None),
             ("Highest", f"{volt['max'] / 1000:.1f} V" if volt.get("max") else None),
-            ("Below 13 V while moving", _dur(m["low_voltage"]["total"])),
+            (f"Below {LOW_VOLTAGE_MV / 1000:g} V while moving", _dur(m["low_voltage"]["total"])),
             ("Peak current drawn", f"{m['current_max']} mA" if m.get("current_max") else None))},
         {"title": "Device", "rows": rows(
             ("Highest temperature", _temp(m["temp_max"]) if m.get("temp_max") is not None else None),
             ("Thermal states seen", ", ".join(m["thermal"]) or None),
             ("Fan (highest)", f"{m['fan_max']} rpm" if m.get("fan_max") is not None else None),
             ("Memory use (highest)", f"{m['mem_max']}%" if m.get("mem_max") is not None else None),
-            ("Free storage (lowest)", f"{m['free_min']}%" if m.get("free_min") is not None else None),
+            ("Free storage (lowest)", f"{m['free_min']:.0f}%" if m.get("free_min") is not None else None),
             ("Power draw (highest)", f"{m['power_max']:.1f} W" if m.get("power_max") else None))},
         {"title": "Cars ahead (radar)", "rows": rows(
             ("A car was ahead", f"{_dur(lead['present_s'])} ({_pct(lead['present_s'], moving)} of moving time)"),
@@ -461,7 +468,7 @@ def present(m, expected=0, found=None):
             ("Friction", f"{m['calib']['friction']:.2f}" if "friction" in m["calib"] else None),
             ("Steering delay", f"{m['calib']['lateral_delay_s']:.2f} s" if "lateral_delay_s" in m["calib"] else None))},
         {"title": "Alerts and events", "rows": [[ALERT_LABELS.get(n, n), f"{c}x"] for n, c in sorted(m["events"].items(), key=lambda x: -x[1])]},
-        {"title": "Car modules", "rows": [[f"{ecu} ({brand})", _printable(fw)] for ecu, brand, fw in (m["fw"] or [])]},
+        {"title": "Car modules", "rows": _modules(m["fw"])},
         {"title": "Other", "rows": rows(
             ("Seatbelt unlatched while moving", _dur(m["seatbelt_s"])), ("Door open while moving", _dur(m["door_s"])),
             ("Blinker on", _dur(m["blinker_s"])))},

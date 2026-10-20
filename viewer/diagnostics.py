@@ -279,7 +279,8 @@ def merge(segments):
         joined = previous is not None and number == previous[0] + 1
         m["hard"] += s["hard"]["count"] - (1 if joined and previous[1]["hard"]["last"] and s["hard"]["first"] else 0)
         for bus, value in enumerate(s["rec_max"]):
-            _hi(m["rec_max"], bus, value)
+            if value is not None:
+                m["rec_max"][bus] = value if m["rec_max"][bus] is None else max(m["rec_max"][bus], value)
         for src, dst in ((s["resets"], resets), (s["can_errors"], errors)):
             for key, value in src.items():
                 (_hi if key.endswith("max") else _lo)(dst, key, value)

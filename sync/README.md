@@ -20,6 +20,7 @@ others default to the container's mounts.
 | `LOCAL_STITCHED` | `/data/stitched` | where stitched videos go |
 | `LOG_FILE` | `/data/logs/device_sync.log` | log |
 | `DELETED_FILE` | `/data/logs/deleted_routes.txt` | routes that were deleted here and must not be fetched again |
+| `METADATA_DIR` | `/data/metadata` | the viewer's folder: its star list and the delete requests the sync carries out |
 | `MIN_FREE_GB` | `75` | free space below which the oldest drives are removed |
 
 With docker compose, put the address in the `.env` file next to the compose file and pass it on:
@@ -36,6 +37,15 @@ DEVICE_IP=192.168.1.50
     environment:
       DEVICE_IP: ${DEVICE_IP}
 ```
+
+## Deleting drives
+
+The viewer's Delete button does not delete anything itself: it creates an empty file named after
+the drive in `$METADATA_DIR/delete_requests/`. At the start of every run, before it checks that the
+device is reachable, the script (`delete_lib.sh`) deletes those drives, records them in
+`DELETED_FILE` so they are not fetched again, and removes the request. Drives starred in the viewer
+(`$METADATA_DIR/preserved_routes.json`) or with a `.preserve` file are never deleted, by a request or by
+the free-space cleanup. The device's own copy is never touched. Tests: `bash sync/test_delete_lib.sh`.
 
 Without `DEVICE_IP` the script stops straight away with `set DEVICE_IP to the address of the device`.
 

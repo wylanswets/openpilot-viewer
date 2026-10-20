@@ -9,7 +9,7 @@ from unittest import mock
 from django.test import TestCase
 from django.urls import reverse
 
-from viewer import summary, thumbnails, tracks, views
+from viewer import deletion, summary, thumbnails, tracks, views
 from viewer.templatetags import custom_filters
 
 
@@ -780,3 +780,155 @@ class ThumbnailEndpointTests(TestCase):
 
     def test_odd_route_ids_are_rejected(self):
         self.assertEqual(self.client.get(reverse("drive_thumbnail", args=["bad.id"])).status_code, 404)
+
+
+class FormNesting(__import__("html.parser", fromlist=["HTMLParser"]).HTMLParser):
+    """Records how deeply <form> elements nest (browsers ignore a form inside a form)."""
+
+    def __init__(self):
+        super().__init__()
+        self.depth = self.max_depth = 0
+        self.actions = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "form":
+            self.depth += 1
+            self.max_depth = max(self.max_depth, self.depth)
+            self.actions.append(dict(attrs).get("action"))
+
+    def handle_endtag(self, tag):
+        if tag == "form":
+            self.depth -= 1
+
+
+class DeleteDriveTests(TestCase):
+    ROUTE = "0000000c--cccccccccc"
+    OTHER = "0000000d--dddddddddd"
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        self.raw, self.stitched, self.metadata = root / "raw", root / "stitched", root / "metadata"
+        self.raw.mkdir()
+        self.stitched.mkdir()
+        for target, name, value in (
+            (views, "RAW_DIR", self.raw),
+            (views, "STITCHED_DIR", self.stitched),
+            (views, "METADATA_DIR", self.metadata),
+            (views, "PRESERVED_FILE", self.metadata / "preserved_routes.json"),
+            (custom_filters, "STITCHED_DIR", self.stitched),
+        ):
+            patcher = mock.patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        patcher = mock.patch.object(thumbnails, "start_background")  # no real map tile fetching
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.metadata.mkdir()
+        for route in (self.ROUTE, self.OTHER):
+            (self.raw / f"{route}--0").mkdir()
+            (self.stitched / route).mkdir()
+        self.marker = self.metadata / "delete_requests" / self.ROUTE
+
+    def star(self, route):
+        (self.metadata / "preserved_routes.json").write_text(f'["{route}"]')
+
+    def card(self, route):
+        return f'href="/drive/{route}/"'
+
+    def test_marking_a_drive_writes_the_request_the_sync_reads(self):
+        response = self.client.post(reverse("delete_drive", args=[self.ROUTE]), follow=True)
+        # the contract with sync/delete_lib.sh: an empty file named after the route
+        self.assertTrue(self.marker.is_file())
+        self.assertEqual(self.marker.read_bytes(), b"")
+        self.assertContains(response, "marked for deletion")
+        self.assertContains(response, "within about 5 minutes")
+
+    def test_the_viewer_itself_deletes_nothing(self):
+        self.client.post(reverse("delete_drive", args=[self.ROUTE]))
+        self.assertTrue((self.raw / f"{self.ROUTE}--0").exists())
+        self.assertTrue((self.stitched / self.ROUTE).exists())
+
+    def test_a_marked_drive_is_hidden_with_an_undo_and_others_stay(self):
+        self.client.post(reverse("delete_drive", args=[self.ROUTE]))
+        response = self.client.get(reverse("drive_list"))
+        self.assertNotContains(response, self.card(self.ROUTE))
+        self.assertContains(response, self.card(self.OTHER))
+        self.assertContains(response, "Being deleted (1)")
+        self.assertContains(response, reverse("undo_delete", args=[self.ROUTE]))
+
+    def test_undo_brings_the_drive_back(self):
+        self.client.post(reverse("delete_drive", args=[self.ROUTE]))
+        response = self.client.post(reverse("undo_delete", args=[self.ROUTE]), follow=True)
+        self.assertFalse(self.marker.exists())
+        self.assertContains(response, "will not be deleted")
+        self.assertContains(self.client.get(reverse("drive_list")), self.card(self.ROUTE))
+
+    def test_undo_when_nothing_is_waiting_says_so(self):
+        response = self.client.post(reverse("undo_delete", args=[self.ROUTE]), follow=True)
+        self.assertContains(response, "was not waiting to be deleted")
+
+    def test_a_starred_drive_cannot_be_marked(self):
+        self.star(self.ROUTE)
+        response = self.client.post(reverse("delete_drive", args=[self.ROUTE]), follow=True)
+        self.assertFalse(self.marker.exists())
+        self.assertContains(response, "is starred")
+
+    def test_unknown_or_odd_route_ids_are_rejected(self):
+        for route in ("0000000e--eeeeeeeeee", "bad.id", "..x--y", "a--b--c"):
+            response = self.client.post(reverse("delete_drive", args=[route]))
+            self.assertEqual(response.status_code, 404, route)
+        self.assertFalse((self.metadata / "delete_requests").exists())
+        self.assertEqual(self.client.post(reverse("undo_delete", args=["bad.id"])).status_code, 404)
+
+    def test_only_post_is_allowed(self):
+        self.assertEqual(self.client.get(reverse("delete_drive", args=[self.ROUTE])).status_code, 405)
+        self.assertEqual(self.client.get(reverse("undo_delete", args=[self.ROUTE])).status_code, 405)
+        self.assertFalse(self.marker.exists())
+
+    def test_the_page_of_a_marked_drive_goes_back_to_the_list(self):
+        self.client.post(reverse("delete_drive", args=[self.ROUTE]))
+        response = self.client.get(reverse("drive_detail", args=[self.ROUTE]))
+        self.assertRedirects(response, reverse("drive_list"), fetch_redirect_response=False)
+
+    def test_marker_for_a_drive_that_is_already_gone_is_not_listed(self):
+        gone = "0000000f--ffffffffff"
+        deletion.request_delete(gone, self.metadata)
+        self.assertNotContains(self.client.get(reverse("drive_list")), "Being deleted")
+
+    def test_drive_page_forms_are_not_nested_and_have_a_confirmation(self):
+        response = self.client.get(reverse("drive_detail", args=[self.ROUTE]))
+        parser = FormNesting()
+        parser.feed(response.content.decode())
+        self.assertEqual(parser.max_depth, 1, "a form inside a form is ignored by browsers")
+        for name in ("toggle_preserve", "recreate_stitched", "delete_drive"):
+            self.assertIn(reverse(name, args=[self.ROUTE]), parser.actions)
+        self.assertContains(response, "return confirm(")
+        self.assertContains(response, "The copy on the device is not touched")
+
+    def test_a_starred_drive_shows_a_disabled_delete_button(self):
+        self.star(self.ROUTE)
+        response = self.client.get(reverse("drive_detail", args=[self.ROUTE]))
+        self.assertContains(response, "Unstar this drive first")
+        self.assertNotContains(response, reverse("delete_drive", args=[self.ROUTE]))
+
+    def test_pending_ignores_other_files(self):
+        directory = self.metadata / "delete_requests"
+        directory.mkdir()
+        (directory / self.ROUTE).touch()
+        (directory / "not a route").touch()
+        (directory / ".hidden").touch()
+        (directory / "sub--dir").mkdir()
+        self.assertEqual(deletion.pending(self.metadata), {self.ROUTE})
+        self.assertEqual(deletion.pending(self.metadata / "missing"), set())
+
+    def test_route_id_rule_matches_the_sync_script(self):
+        # sync/delete_lib.sh: ROUTE_ID_RE='^[A-Za-z0-9]+--[A-Za-z0-9]+$'
+        source = (Path(__file__).resolve().parent.parent / "sync" / "delete_lib.sh").read_text()
+        self.assertIn("ROUTE_ID_RE='^[A-Za-z0-9]+--[A-Za-z0-9]+$'", source)
+        self.assertEqual(deletion.ROUTE_ID_RE.pattern, "^[A-Za-z0-9]+--[A-Za-z0-9]+$")
+
+    def test_messages_are_shown_on_any_page(self):
+        response = self.client.post(reverse("undo_delete", args=[self.ROUTE]), follow=True)
+        self.assertContains(response, "bg-yellow-100")  # the warning styling from the base template

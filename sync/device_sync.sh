@@ -16,6 +16,7 @@ LOCAL_RAW="${LOCAL_RAW:-/data/raw}"
 LOCAL_STITCHED="${LOCAL_STITCHED:-/data/stitched}"
 LOG_FILE="${LOG_FILE:-/data/logs/device_sync.log}"
 DELETED_FILE="${DELETED_FILE:-/data/logs/deleted_routes.txt}"
+METADATA_DIR="${METADATA_DIR:-/data/metadata}"
 SSH_OPTS="-i $SSH_KEY -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$KNOWN_HOSTS -o BatchMode=yes"
 # Keep partial files so a dropped connection resumes instead of restarting big files.
 RSYNC_RESUME="--partial --timeout=120"
@@ -44,6 +45,12 @@ if [ -f "$LOG_FILE" ]; then
     fi
 fi
 
+# route deletion (shared by the free-space cleanup and the viewer's delete requests)
+source "$(dirname "$0")/delete_lib.sh"
+
+# carry out drives the viewer marked for deletion; no device needed for that
+process_delete_requests
+
 # ping device ip to check if online or not
 if ! ping -c 1 -W 2 "$DEVICE_IP" >/dev/null 2>&1; then
     log "Device not reachable at $DEVICE_IP"
@@ -54,53 +61,6 @@ fi
 check_space() {
     avail_gb=$(df -BG "$LOCAL_RAW" | awk 'NR==2 {gsub("G","",$4); print $4}')
     echo "$avail_gb"
-}
-
-# FUNCTION: cleanup oldest routes
-cleanup_routes() {
-    log "Free space below ${MIN_FREE_GB}GB, cleaning up old routes..."
-    find "$LOCAL_STITCHED" -mindepth 1 -maxdepth 1 -type d | sort | while read -r route_dir; do
-        if [ -f "$route_dir/.preserve" ]; then
-            log "Skipping preserved route $(basename "$route_dir")"
-            continue
-        fi
-
-        route_id=$(basename "$route_dir")
-        log "Deleting route $route_id..."
-
-        # delete stitched route
-        if ! rm -rf -- "$route_dir" 2>>"$LOG_FILE"; then
-            log "ERROR: Failed to delete stitched route $route_dir"
-            continue
-        fi
-
-        # delete raw segments
-        find "$LOCAL_RAW" -maxdepth 1 -type d -name "${route_id}--*" -print0 \
-            | xargs -0 rm -rf -- 2>>"$LOG_FILE" || {
-                log "ERROR: Failed deleting raw segments for $route_id"
-                continue
-            }
-
-        # verify deletion actually succeeded
-        remaining=$(find "$LOCAL_RAW" -maxdepth 1 -type d -name "${route_id}--*" | wc -l)
-
-        if [ -d "$route_dir" ] || [ "$remaining" -gt 0 ]; then
-            log "ERROR: Route $route_id still exists after deletion attempt"
-            continue
-        fi
-
-        # mark as deleted ONLY after successful cleanup
-        echo "$route_id" >> "$DELETED_FILE"
-
-        log "Successfully deleted route $route_id"
-
-        avail=$(check_space)
-
-        if [ "$avail" -ge "$MIN_FREE_GB" ]; then
-            log "Cleanup finished, free space now ${avail}GB"
-            return
-        fi
-    done
 }
 
 # check free space before syncing

@@ -21,8 +21,8 @@ out=$(run PRINT=DEVICE_IP); rc=$?
 check "without DEVICE_IP the script stops" test $rc -ne 0
 check "and says what to set" bash -c "echo '$out' | grep -q 'set DEVICE_IP to the address of the device'"
 
-out=$(run DEVICE_IP=10.1.2.3 PRINT="DEVICE_USER SSH_KEY KNOWN_HOSTS REMOTE_DRIVES LOCAL_RAW LOCAL_STITCHED LOG_FILE MIN_FREE_GB")
-expected=$(printf '%s\n' DEVICE_USER=comma SSH_KEY=/keys/openpilot_sync_ed25519 KNOWN_HOSTS=/app/ssh/known_hosts REMOTE_DRIVES=/data/media/0/realdata LOCAL_RAW=/data/raw LOCAL_STITCHED=/data/stitched LOG_FILE=/data/logs/device_sync.log MIN_FREE_GB=75)
+out=$(run DEVICE_IP=10.1.2.3 PRINT="DEVICE_USER SSH_KEY KNOWN_HOSTS REMOTE_DRIVES LOCAL_RAW LOCAL_STITCHED LOG_FILE METADATA_DIR MIN_FREE_GB")
+expected=$(printf '%s\n' DEVICE_USER=comma SSH_KEY=/keys/openpilot_sync_ed25519 KNOWN_HOSTS=/app/ssh/known_hosts REMOTE_DRIVES=/data/media/0/realdata LOCAL_RAW=/data/raw LOCAL_STITCHED=/data/stitched LOG_FILE=/data/logs/device_sync.log METADATA_DIR=/data/metadata MIN_FREE_GB=75)
 check "the other settings default to the container's values (what was hard-coded before)" test "$out" = "$expected"
 
 out=$(run DEVICE_IP=10.1.2.3 DEVICE_USER=pilot MIN_FREE_GB=200 LOCAL_RAW=/srv/raw PRINT="DEVICE_USER MIN_FREE_GB LOCAL_RAW LOCAL_STITCHED")

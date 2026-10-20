@@ -18,7 +18,7 @@ from django.views.decorators.http import require_POST
 from django.contrib import messages
 import shutil
 
-from . import summary, tracks
+from . import deletion, summary, tracks
 from . import thumbnails as route_thumbnails  # drive_list has a local named thumbnails
 
 DEFAULT_OLD_DATE = datetime(1900, 1, 1)
@@ -140,6 +140,11 @@ def drive_list(request):
     # union of both sets
     all_route_ids = set(raw_routes_grouped.keys()) | set(stitched_routes.keys())
 
+    # drives marked for deletion are hidden at once; the sync removes them from disk
+    marked = deletion.pending(METADATA_DIR)
+    pending_deletes = sorted(all_route_ids & marked)
+    all_route_ids -= marked
+
     for route_id in all_route_ids:
         stitched_path = stitched_routes.get(route_id)
         raw_paths = raw_routes_grouped.get(route_id, [])
@@ -204,11 +209,15 @@ def drive_list(request):
         "thumb_indices": thumb_indices,
         "preserved_routes": preserved_routes,
         "show_preserved_only": show_preserved_only,
+        "pending_deletes": pending_deletes,
     })
 
 
 def drive_detail(request, route_id):
     """Show stitched videos if available, otherwise logs-only route detail."""
+    if route_id in deletion.pending(METADATA_DIR):
+        messages.info(request, f"{route_id} is marked for deletion.")
+        return redirect("drive_list")
     drive_path = STITCHED_DIR / route_id
     videos = []
 
@@ -238,6 +247,38 @@ def drive_detail(request, route_id):
         "drive": drive,
         "preserved_routes": preserved_routes
     })
+
+@require_POST
+def delete_drive(request, route_id):
+    """Mark a drive for deletion; the sync deletes it (and keeps it from coming back)."""
+    if not deletion.is_valid_route_id(route_id):
+        raise Http404("Unknown route")
+    on_disk = (STITCHED_DIR / route_id).is_dir() or any(RAW_DIR.glob(f"{route_id}--*"))
+    if not on_disk:
+        raise Http404("Unknown route")
+    if route_id in load_preserved_routes():
+        messages.error(request, f"{route_id} is starred. Unstar it first if you want to delete it.")
+        return redirect("drive_detail", route_id=route_id)
+    deletion.request_delete(route_id, METADATA_DIR)
+    messages.success(
+        request,
+        f"{route_id} is marked for deletion. It is hidden now and is removed from this "
+        "server by the next sync (within about 5 minutes). The copy on the device is not touched.",
+    )
+    return redirect("drive_list")
+
+
+@require_POST
+def undo_delete(request, route_id):
+    """Withdraw a deletion that the sync has not carried out yet."""
+    if not deletion.is_valid_route_id(route_id):
+        raise Http404("Unknown route")
+    if deletion.cancel(route_id, METADATA_DIR):
+        messages.success(request, f"{route_id} will not be deleted.")
+        return redirect("drive_detail", route_id=route_id)
+    messages.warning(request, f"{route_id} was not waiting to be deleted; it may already be gone.")
+    return redirect("drive_list")
+
 
 def drive_track(request, route_id):
     """GPS track of a route as JSON, for the map on the drive page."""

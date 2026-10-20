@@ -3,6 +3,7 @@
 {% block title %}Drive {{ drive.route_id }}{% endblock %}
 
 {% block content %}
+<div class="flex flex-wrap items-center gap-2 mb-2">
 <form method="post" action="{% url 'toggle_preserve' drive.route_id %}" class="inline-block">
     {% csrf_token %}
     <button type="submit" class="p-1 rounded hover:bg-gray-200" title="{% if drive.route_id in preserved_routes %}Unsave{% else %}Save{% endif %}">
@@ -19,6 +20,7 @@
         </svg>
     {% endif %}
     </button>
+</form>
     <button type="button"
             onclick="event.stopPropagation(); event.preventDefault(); copyToClipboard('{{ drive.route_id|escapejs }}');"
             class="ml-1 p-1 rounded hover:bg-gray-200"
@@ -45,7 +47,17 @@
         Recreate Stitched Video
       </button>
     </form>
-</form>
+    {% if drive.route_id in preserved_routes %}
+    <button type="button" disabled title="Unstar this drive first"
+            class="px-3 py-1 bg-gray-300 text-gray-500 rounded cursor-not-allowed">Delete Drive</button>
+    {% else %}
+    <form method="post" action="{% url 'delete_drive' drive.route_id %}"
+          onsubmit="return confirm('Delete drive {{ drive.route_id|escapejs }}?\n\nIt is removed from this server by the next sync (within about 5 minutes). The copy on the device is not touched.');">
+      {% csrf_token %}
+      <button type="submit" class="px-3 py-1 bg-red-600 text-white rounded hover:bg-red-700">Delete Drive</button>
+    </form>
+    {% endif %}
+</div>
 <div class="max-w-6xl mx-auto px-4 py-8">
   <!-- Header -->
   <div class="flex justify-between items-center mb-6">

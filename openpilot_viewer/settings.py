@@ -108,7 +108,18 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
+def _time_zone(name):
+    """The TIME_ZONE environment setting (e.g. America/New_York); UTC if it is not a known zone."""
+    from zoneinfo import ZoneInfo
+    try:
+        ZoneInfo(name)
+    except Exception:
+        return 'UTC'
+    return name
+
+
+# Start times written by the sync are in UTC; they are shown in this zone.
+TIME_ZONE = _time_zone(os.environ.get('TIME_ZONE', 'UTC'))
 
 USE_I18N = True
 

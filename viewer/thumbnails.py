@@ -254,14 +254,15 @@ def _write_state(thumbs_dir, route_id, state):
 def still_arriving(raw_dir, stitched_dir, route_id, now):
     """True while a route may still be being recorded or synced, so its image would be made too early.
 
-    The sync writes stitched/<route>/.done only after the whole route was synced and stitched
-    (and holds back the newest route while the device is driving), so that is the reliable
-    sign that a route is finished. Log file times are no use on their own: the sync rewrites
-    the logs of some routes on every run, which keeps resetting them. They are the fallback
-    for a route that has no stitched folder yet.
+    The sync writes stitched/<route>/.done only after the whole route was copied and stitched (and
+    it holds back the newest route while the device is driving), so with the stitched folder known
+    that is the only thing that counts. Log file times are not a safe sign: the device can drop off
+    the network part way through a copy and leave a route with most of its logs missing, and the sync
+    used to rewrite logs on every run. Without a stitched folder to look at (tests, the command line
+    without one) the age of the newest log is used instead.
     """
-    if stitched_dir is not None and (Path(stitched_dir) / route_id / ".done").is_file():
-        return False
+    if stitched_dir is not None:
+        return not (Path(stitched_dir) / route_id / ".done").is_file()
     return now - _newest_qlog_mtime(raw_dir, route_id) < RECORDING_AGE_S
 
 

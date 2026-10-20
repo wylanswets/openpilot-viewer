@@ -2,6 +2,8 @@ import os
 from django import template
 from pathlib import Path
 
+from viewer import labels
+
 register = template.Library()
 
 STITCHED_DIR = Path("/data/stitched")
@@ -29,3 +31,9 @@ def dict_get(d, key):
             return [val]
         return val or []
     return []
+
+
+@register.simple_tag
+def drive_label(start_time, duration_s=None):
+    """{% drive_label drive.start_time drive.duration_s %} -> Oct 20, 2026 - 5:05 PM (10 min 26 sec)"""
+    return labels.drive_label(start_time, duration_s)

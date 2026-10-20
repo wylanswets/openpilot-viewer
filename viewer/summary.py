@@ -10,7 +10,7 @@ steering and of speed versus the driver, plus speed, distance and events.
 """
 from pathlib import Path
 
-from .qlogs import cached_segments, read_events
+from .qlogs import cached_only, cached_segments, read_events
 
 CACHE_VERSION = 2  # bump whenever parse_segment's output or logic changes
 SEGMENT_SECONDS = 60
@@ -134,6 +134,20 @@ def parse_segment(qlog_path):
     for key in ("dur", "dist", "vmax", "engaged", "steer_pilot", "speed_pilot"):
         summary[key] = round(summary[key], 2)
     return summary
+
+
+def cached_duration(route_id, raw_dir, cache_dir):
+    """The route's logged duration in seconds, if it is already cached; otherwise None.
+
+    The same number as the drive page's summary (sum of the segments' times), but it never
+    parses a log, so it is safe to call while a page is being built.
+    """
+    data, complete = cached_only(
+        route_id, raw_dir, Path(cache_dir) / f"{route_id}.json", CACHE_VERSION
+    )
+    if not complete:
+        return None
+    return sum(segment["dur"] for segment in data.values())
 
 
 def _share(part, whole):

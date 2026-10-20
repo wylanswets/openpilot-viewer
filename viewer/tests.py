@@ -697,7 +697,7 @@ class MakeThumbnailTests(TestCase):
     def make(self, route=None, **kwargs):
         kwargs.setdefault("now", self.later)
         kwargs.setdefault("fetch", self.fetch)
-        kwargs.setdefault("stitched_dir", self.stitched)
+        kwargs.setdefault("stitched_dir", None)  # the log times decide, unless a test passes self.stitched
         return thumbnails.make_thumbnail(route or self.ROUTE, self.raw, self.metadata, **kwargs)
 
     def test_makes_a_png_and_then_leaves_it_alone(self):
@@ -728,18 +728,24 @@ class MakeThumbnailTests(TestCase):
         self.assertTrue(thumbnails.needs_work(self.metadata / "thumbs", self.ROUTE, 1))
 
     def test_a_route_the_sync_has_finished_is_made_even_if_its_logs_keep_being_rewritten(self):
-        # the sync rewrites some routes' logs on every run, so their times are always recent
+        # the sync rewrote some routes' logs on every run, so their times were always recent
         self.segment(0, [(1, 35.0, -82.0, 5.0), (1, 35.001, -82.001, 5.0)])
         (self.stitched / self.ROUTE).mkdir()
         (self.stitched / self.ROUTE / ".done").touch()
-        self.assertEqual(self.make(now=time.time()), "made")
+        self.assertEqual(self.make(now=time.time(), stitched_dir=self.stitched), "made")
 
     def test_a_stitched_folder_without_done_does_not_count_as_finished(self):
         self.segment(0, [(1, 35.0, -82.0, 5.0)])
         (self.stitched / self.ROUTE).mkdir()  # stitching under way: no .done yet
-        self.assertEqual(self.make(now=time.time()), "recording")
+        self.assertEqual(self.make(stitched_dir=self.stitched), "recording")  # even with old logs
 
-    def test_old_logs_are_enough_when_there_is_no_stitched_folder(self):
+    def test_a_route_that_is_not_stitched_yet_is_not_finished_however_old_its_logs_are(self):
+        # a copy that stopped half way (the device left the network) leaves old logs and missing ones
+        self.segment(0, [(1, 35.0, -82.0, 5.0), (1, 35.001, -82.001, 5.0)])
+        self.assertEqual(self.make(stitched_dir=self.stitched), "recording")
+        self.assertFalse(thumbnails.image_path(self.metadata / "thumbs", self.ROUTE).exists())
+
+    def test_old_logs_are_enough_when_no_stitched_folder_is_given(self):
         self.segment(0, [(1, 35.0, -82.0, 5.0), (1, 35.001, -82.001, 5.0)])
         self.assertEqual(self.make(), "made")
 
@@ -1113,6 +1119,12 @@ class PrepareRouteTests(TestCase):
         (self.stitched / self.ROUTE).mkdir()  # stitching under way: no .done, logs are fresh
         self.assertEqual(self.prepare(now=time.time()), "recording")
         self.assertFalse(self.cache_file().exists())
+
+    def test_a_half_copied_drive_gets_no_summary_so_no_wrong_duration(self):
+        # logs are old but the sync never finished the drive: no .done
+        self.assertEqual(self.prepare(), "recording")
+        self.assertFalse(self.cache_file().exists())
+        self.assertIsNone(summary.cached_duration(self.ROUTE, self.raw, self.metadata / "summaries"))
 
     def test_a_summary_that_fails_does_not_stop_the_map_image(self):
         self.finish()

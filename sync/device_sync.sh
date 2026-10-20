@@ -162,7 +162,11 @@ for route_id in $routes; do
 
         if [ -s "$filelist" ]; then
             log "Stitching $cam -> $output"
-            if ! ffmpeg -y -loglevel error -f concat -safe 0 -i "$filelist" -c copy "$output"; then
+            # -tag:v hvc1: Safari and iPhones only play HEVC in an MP4 when it is tagged hvc1 (ffmpeg
+            # writes hev1 by default, which Chrome accepts). -movflags +faststart puts the index at the
+            # start of the file so playback can begin without reading to the end first. Nothing is
+            # re-encoded.
+            if ! ffmpeg -y -loglevel error -f concat -safe 0 -i "$filelist" -c copy -tag:v hvc1 -movflags +faststart "$output"; then
                 log "ERROR: stitching $cam failed for $route_id"
                 rm -f "$output"
                 route_ok=false

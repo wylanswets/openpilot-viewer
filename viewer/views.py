@@ -18,7 +18,7 @@ from django.views.decorators.http import require_POST
 from django.contrib import messages
 import shutil
 
-from . import deletion, summary, tracks
+from . import deletion, prepare, summary, tracks
 from . import thumbnails as route_thumbnails  # drive_list has a local named thumbnails
 
 DEFAULT_OLD_DATE = datetime(1900, 1, 1)
@@ -194,15 +194,22 @@ def drive_list(request):
     # Route map thumbnails: show the ones that exist, make the missing ones in the background.
     thumbs_dir = METADATA_DIR / "thumbs"
     missing = []
+    to_prepare = []  # drives that need a map image or a duration worked out in the background
+    summaries_dir = METADATA_DIR / "summaries"
     for drive in page_obj:
         route_id = drive["route_id"]
+        drive["duration_s"] = summary.cached_duration(route_id, RAW_DIR, summaries_dir)
         image = route_thumbnails.image_path(thumbs_dir, route_id)
         if image.exists():
             drive["thumbnail_url"] = f"{reverse('drive_thumbnail', args=[route_id])}?v={int(image.stat().st_mtime)}"
         if route_thumbnails.needs_work(thumbs_dir, route_id, len(raw_routes_grouped.get(route_id, []))):
             drive["thumbnail_pending"] = True
             missing.append(route_id)
-    route_thumbnails.start_background(missing, RAW_DIR, METADATA_DIR, stitched_dir=STITCHED_DIR)
+        if route_id in missing or drive["duration_s"] is None:
+            to_prepare.append(route_id)
+    route_thumbnails.start_background(
+        to_prepare, RAW_DIR, METADATA_DIR, make=prepare.prepare_route, stitched_dir=STITCHED_DIR
+    )
 
     return render(request, "viewer/drive_list.html", {
         "page_obj": page_obj,
@@ -240,6 +247,7 @@ def drive_detail(request, route_id):
         "stitched": drive_path.is_dir(),
         "videos": videos,
         "start_time": start_time,
+        "duration_s": summary.cached_duration(route_id, RAW_DIR, METADATA_DIR / "summaries"),
     }
 
     preserved_routes = load_preserved_routes()

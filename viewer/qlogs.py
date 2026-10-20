@@ -47,6 +47,45 @@ def _save_cache(cache_file, version, segments):
         pass  # the cache is an optimisation; a read-only metadata dir is fine
 
 
+def _found_segments(route_id, raw_dir):
+    """[(segment number, qlog path)] for the segments of a route that have a qlog, in order."""
+    found = []
+    for folder in Path(raw_dir).glob(f"{route_id}--*"):
+        suffix = folder.name.rsplit("--", 1)[-1]
+        qlog = folder / "qlog.zst"
+        if suffix.isdigit() and qlog.is_file():
+            found.append((int(suffix), qlog))
+    return sorted(found)
+
+
+def _is_current(entry, stat_result):
+    """Is this cache entry for the qlog as it is now?"""
+    return bool(
+        entry
+        and "data" in entry
+        and entry.get("size") == stat_result.st_size
+        and entry.get("mtime") == int(stat_result.st_mtime)
+    )
+
+
+def cached_only(route_id, raw_dir, cache_file, version=1):
+    """What is cached for a route, without parsing anything: ({segment: data}, complete).
+
+    `complete` is True when the route has qlogs and every one of them has an up to date
+    cache entry. Cheap enough to call while a page is being built.
+    """
+    cached = _load_cache(Path(cache_file), version)
+    data, complete, any_found = {}, True, False
+    for number, qlog in _found_segments(route_id, raw_dir):
+        any_found = True
+        entry = cached.get(str(number))
+        if _is_current(entry, qlog.stat()):
+            data[number] = entry["data"]
+        else:
+            complete = False
+    return data, complete and any_found
+
+
 def cached_segments(route_id, raw_dir, cache_file, parse, version=1):
     """Return {segment number: parse(qlog path)} for every qlog of a route.
 
@@ -60,22 +99,10 @@ def cached_segments(route_id, raw_dir, cache_file, parse, version=1):
     segments = {}
     changed = False
 
-    found = []
-    for folder in Path(raw_dir).glob(f"{route_id}--*"):
-        suffix = folder.name.rsplit("--", 1)[-1]
-        qlog = folder / "qlog.zst"
-        if suffix.isdigit() and qlog.is_file():
-            found.append((int(suffix), qlog))
-
-    for number, qlog in sorted(found):
+    for number, qlog in _found_segments(route_id, raw_dir):
         st = qlog.stat()
         entry = cached.get(str(number))
-        if (
-            not entry
-            or "data" not in entry
-            or entry.get("size") != st.st_size
-            or entry.get("mtime") != int(st.st_mtime)
-        ):
+        if not _is_current(entry, st):
             try:
                 entry = {"size": st.st_size, "mtime": int(st.st_mtime), "data": parse(qlog)}
             except Exception:

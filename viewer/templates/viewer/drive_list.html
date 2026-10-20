@@ -58,7 +58,7 @@
               {% if drive.start_time.year == 1900 %}
                 <span class="text-sm text-gray-400">No timestamp</span>
               {% else %}
-                <span class="text-sm text-gray-500">{{ drive.start_time|date:"Y-m-d H:i" }}</span>
+                <span class="text-sm text-gray-500">{% drive_label drive.start_time drive.duration_s %}</span>
               {% endif %}
             </div>
             <form method="post" action="{% url 'toggle_preserve' drive.route_id %}" class="inline-block">

@@ -6,10 +6,10 @@ from io import BytesIO
 from pathlib import Path
 from unittest import mock
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.urls import reverse
 
-from viewer import deletion, summary, thumbnails, tracks, views
+from viewer import deletion, labels, prepare, qlogs, summary, thumbnails, tracks, views
 from viewer.templatetags import custom_filters
 
 
@@ -145,12 +145,56 @@ class DriveListCameraTests(TestCase):
         self.start_background.assert_called_once()
         self.assertEqual(self.start_background.call_args.args[0], ["00000013--6666666666"])
 
-    def test_route_known_to_have_no_gps_gets_no_placeholder_and_no_work(self):
+    def test_route_known_to_have_no_gps_gets_no_placeholder(self):
         self.make_drive("00000014--7777777777", ["fcamera"])
         thumbnails._write_state(self.metadata / "thumbs", "00000014--7777777777", {"status": "no_gps", "segments": 0})
-        response = self.client.get(reverse("drive_list"))
+        with mock.patch.object(summary, "cached_duration", return_value=60.0):
+            response = self.client.get(reverse("drive_list"))
         self.assertNotContains(response, 'class="thumbnail-pending" data-src')
-        self.assertEqual(self.start_background.call_args.args[0], [])
+        self.assertEqual(self.start_background.call_args.args[0], [])  # nothing left to do for it
+
+    def test_a_drive_without_a_known_duration_is_queued_for_the_background_thread(self):
+        thumbnails._write_state(self.metadata / "thumbs", "00000014--7777777777", {"status": "no_gps", "segments": 0})
+        self.make_drive("00000014--7777777777", ["fcamera"])
+        response = self.client.get(reverse("drive_list"))  # no cached duration
+        self.assertNotContains(response, 'class="thumbnail-pending" data-src')
+        self.assertEqual(self.start_background.call_args.args[0], ["00000014--7777777777"])
+        self.assertIs(self.start_background.call_args.kwargs["make"], prepare.prepare_route)
+
+    def test_list_label_is_in_local_time_with_the_duration(self):
+        self.make_drive("00000015--8888888888", ["fcamera"])
+        (self.stitched / "00000015--8888888888" / "start_time.txt").write_text("2026-10-19 11:34:55")
+        with override_settings(TIME_ZONE="America/New_York"), \
+                mock.patch.object(summary, "cached_duration", return_value=626.4):
+            response = self.client.get(reverse("drive_list"))
+        self.assertContains(response, "Oct 19, 2026 - 7:34 AM (10 min 26 sec)")
+        self.assertNotContains(response, "2026-10-19 11:34")
+
+    def test_list_label_without_a_duration_has_no_brackets(self):
+        self.make_drive("00000015--8888888888", ["fcamera"])
+        (self.stitched / "00000015--8888888888" / "start_time.txt").write_text("2026-10-19 11:34:55")
+        with override_settings(TIME_ZONE="America/New_York"):
+            response = self.client.get(reverse("drive_list"))
+        self.assertContains(response, "Oct 19, 2026 - 7:34 AM</span>")
+
+    def test_a_drive_with_no_known_start_time_says_so(self):
+        self.make_drive("00000015--8888888888", ["fcamera"])
+        self.assertContains(self.client.get(reverse("drive_list")), "No timestamp")
+
+    def test_the_drive_page_uses_the_same_label(self):
+        self.make_drive("00000015--8888888888", ["fcamera"])
+        (self.stitched / "00000015--8888888888" / "start_time.txt").write_text("2026-10-19 11:34:55")
+        with override_settings(TIME_ZONE="America/New_York"), \
+                mock.patch.object(summary, "cached_duration", return_value=3302):
+            response = self.client.get(reverse("drive_detail", args=["00000015--8888888888"]))
+        self.assertContains(response, "Oct 19, 2026 - 7:34 AM (55 min 2 sec)")
+
+    def test_building_the_list_never_parses_a_log(self):
+        self.make_drive("00000015--8888888888", ["fcamera"])
+        (self.raw / "00000015--8888888888--0").mkdir()
+        (self.raw / "00000015--8888888888--0" / "qlog.zst").write_bytes(b"not a real log")
+        with mock.patch.object(qlogs, "read_events", side_effect=AssertionError("parsed a log")):
+            self.assertEqual(self.client.get(reverse("drive_list")).status_code, 200)
 
     def test_no_stitched_path_line(self):
         self.make_drive("00000004--dddddddddd", ["fcamera"])
@@ -455,6 +499,28 @@ class DriveSummaryTests(TestCase):
         self.assertTrue((self.cache / f"{self.ROUTE}.json").exists())
         with mock.patch.object(summary, "parse_segment", side_effect=AssertionError("reparsed")):
             self.assertEqual(self.summary()["segments"], 1)
+
+    def test_cached_duration_is_none_until_the_route_has_been_summarised(self):
+        self.segment(0, run(0, 5, lat=True))
+        self.assertIsNone(summary.cached_duration(self.ROUTE, self.raw, self.cache))
+        total = self.summary()["duration_s"]
+        self.assertAlmostEqual(summary.cached_duration(self.ROUTE, self.raw, self.cache), total, delta=0.5)
+
+    def test_cached_duration_never_parses_and_is_the_same_number_as_the_summary(self):
+        self.segment(0, run(0, 5, lat=True))
+        self.segment(1, run(0, 7, lat=True))
+        expected = self.summary()["duration_s"]
+        with mock.patch.object(qlogs, "read_events", side_effect=AssertionError("parsed a log")):
+            self.assertAlmostEqual(summary.cached_duration(self.ROUTE, self.raw, self.cache), expected, delta=0.6)
+
+    def test_cached_duration_is_none_when_a_segment_is_not_cached_yet(self):
+        self.segment(0, run(0, 5, lat=True))
+        self.summary()
+        self.segment(1, run(0, 5, lat=True))  # a new segment arrived
+        self.assertIsNone(summary.cached_duration(self.ROUTE, self.raw, self.cache))
+
+    def test_cached_duration_is_none_for_a_route_without_logs(self):
+        self.assertIsNone(summary.cached_duration("0000000f--ffffffffff", self.raw, self.cache))
 
     def test_summary_endpoint(self):
         self.segment(0, run(0, 5, lat=True, long_=True))
@@ -932,3 +998,133 @@ class DeleteDriveTests(TestCase):
     def test_messages_are_shown_on_any_page(self):
         response = self.client.post(reverse("undo_delete", args=[self.ROUTE]), follow=True)
         self.assertContains(response, "bg-yellow-100")  # the warning styling from the base template
+
+
+class DriveLabelTests(TestCase):
+    def test_durations(self):
+        for seconds, expected in (
+            (None, None), (0, None), (0.4, None),
+            (1, "1 sec"), (45, "45 sec"), (59.4, "59 sec"),
+            (59.6, "1 min 0 sec"), (60, "1 min 0 sec"), (61, "1 min 1 sec"),
+            (626, "10 min 26 sec"), (626.4, "10 min 26 sec"), (3599, "59 min 59 sec"),
+            (3600, "1 hr 0 min 0 sec"), (3605, "1 hr 0 min 5 sec"), (3725, "1 hr 2 min 5 sec"),
+            (3302, "55 min 2 sec"), (90000, "25 hr 0 min 0 sec"),
+        ):
+            self.assertEqual(labels.format_duration(seconds), expected, seconds)
+
+    def test_no_zero_is_shown_for_a_larger_unit(self):
+        for seconds in (1, 45, 59, 61, 626, 3599):
+            self.assertNotIn("0 hr", labels.format_duration(seconds))
+        for seconds in (1, 45, 59):
+            self.assertNotIn("0 min", labels.format_duration(seconds))
+
+    @override_settings(TIME_ZONE="America/New_York")
+    def test_start_time_is_shown_in_local_time(self):
+        import datetime as dt
+        label = labels.drive_label
+        self.assertEqual(label(dt.datetime(2026, 10, 19, 11, 34, 55)), "Oct 19, 2026 - 7:34 AM")       # summer: UTC-4
+        self.assertEqual(label(dt.datetime(2026, 1, 15, 17, 5, 0)), "Jan 15, 2026 - 12:05 PM")          # winter: UTC-5
+        self.assertEqual(label(dt.datetime(2026, 10, 20, 2, 30, 0)), "Oct 19, 2026 - 10:30 PM")        # the day before, locally
+        self.assertEqual(label(dt.datetime(2026, 10, 19, 4, 5, 0)), "Oct 19, 2026 - 12:05 AM")         # 12 AM, not 0
+        self.assertEqual(label(dt.datetime(2026, 10, 19, 16, 5, 0)), "Oct 19, 2026 - 12:05 PM")        # 12 PM
+        self.assertEqual(label(dt.datetime(2026, 10, 19, 21, 5, 0)), "Oct 19, 2026 - 5:05 PM")         # no leading zero, minutes padded
+        self.assertEqual(label(dt.datetime(2026, 3, 8, 6, 59, 0)), "Mar 8, 2026 - 1:59 AM")            # day without leading zero, before the clocks change
+        self.assertEqual(label(dt.datetime(2026, 3, 8, 7, 1, 0)), "Mar 8, 2026 - 3:01 AM")             # after the spring change
+
+    @override_settings(TIME_ZONE="America/New_York")
+    def test_label_with_a_duration(self):
+        import datetime as dt
+        start = dt.datetime(2026, 10, 19, 21, 5, 0)
+        self.assertEqual(labels.drive_label(start, 626.4), "Oct 19, 2026 - 5:05 PM (10 min 26 sec)")
+        self.assertEqual(labels.drive_label(start, 3725), "Oct 19, 2026 - 5:05 PM (1 hr 2 min 5 sec)")
+        self.assertEqual(labels.drive_label(start, None), "Oct 19, 2026 - 5:05 PM")
+        self.assertEqual(labels.drive_label(start, 0), "Oct 19, 2026 - 5:05 PM")
+
+    @override_settings(TIME_ZONE="UTC")
+    def test_utc_when_no_time_zone_is_set(self):
+        import datetime as dt
+        self.assertEqual(labels.drive_label(dt.datetime(2026, 10, 19, 11, 34, 55)), "Oct 19, 2026 - 11:34 AM")
+
+    @override_settings(TIME_ZONE="America/New_York")
+    def test_an_aware_time_is_converted_not_relabelled(self):
+        import datetime as dt
+        aware = dt.datetime(2026, 10, 19, 11, 34, 55, tzinfo=dt.timezone.utc)
+        self.assertEqual(labels.drive_label(aware), "Oct 19, 2026 - 7:34 AM")
+
+    @override_settings(TIME_ZONE="America/New_York")
+    def test_the_template_tag(self):
+        import datetime as dt
+        from django.template import Context, Template
+        out = Template("{% load custom_filters %}{% drive_label start 626 %}").render(
+            Context({"start": dt.datetime(2026, 10, 19, 21, 5, 0)}))
+        self.assertEqual(out, "Oct 19, 2026 - 5:05 PM (10 min 26 sec)")
+
+    def test_the_time_zone_setting_falls_back_to_utc(self):
+        from openpilot_viewer import settings as project_settings
+        self.assertEqual(project_settings._time_zone("America/New_York"), "America/New_York")
+        self.assertEqual(project_settings._time_zone("Europe/Paris"), "Europe/Paris")
+        self.assertEqual(project_settings._time_zone("Not/AZone"), "UTC")
+        self.assertEqual(project_settings._time_zone(""), "UTC")
+
+
+class PrepareRouteTests(TestCase):
+    ROUTE = "00000020--2020202020"
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        self.raw, self.stitched, self.metadata = root / "raw", root / "stitched", root / "metadata"
+        self.raw.mkdir()
+        self.stitched.mkdir()
+        self.later = time.time() + 3600
+        write_qlog(self.raw / f"{self.ROUTE}--0" / "qlog.zst", [(1, 35.0, -82.0, 5.0), (1, 35.001, -82.001, 5.0)])
+
+    def finish(self):
+        (self.stitched / self.ROUTE).mkdir()
+        (self.stitched / self.ROUTE / ".done").touch()
+
+    def prepare(self, fetch=None, **kwargs):
+        kwargs.setdefault("now", self.later)
+        return prepare.prepare_route(
+            self.ROUTE, self.raw, self.metadata, stitched_dir=self.stitched,
+            fetch=fetch or (lambda z, x, y: tile_png()), **kwargs)
+
+    def cache_file(self):
+        return self.metadata / "summaries" / f"{self.ROUTE}.json"
+
+    def test_a_finished_drive_gets_its_summary_and_its_map_image(self):
+        self.finish()
+        self.assertEqual(self.prepare(), "made")
+        self.assertTrue(self.cache_file().exists())
+        self.assertIsNotNone(summary.cached_duration(self.ROUTE, self.raw, self.metadata / "summaries"))
+        self.assertTrue(thumbnails.image_path(self.metadata / "thumbs", self.ROUTE).exists())
+
+    def test_the_duration_does_not_wait_for_the_internet(self):
+        self.finish()
+
+        def failing(z, x, y):
+            raise OSError("no internet")
+
+        self.assertEqual(self.prepare(fetch=failing), "failed")
+        self.assertTrue(self.cache_file().exists())
+
+    def test_a_drive_that_is_still_arriving_is_left_alone(self):
+        (self.stitched / self.ROUTE).mkdir()  # stitching under way: no .done, logs are fresh
+        self.assertEqual(self.prepare(now=time.time()), "recording")
+        self.assertFalse(self.cache_file().exists())
+
+    def test_a_summary_that_fails_does_not_stop_the_map_image(self):
+        self.finish()
+        with mock.patch.object(summary, "route_summary", side_effect=RuntimeError("boom")):
+            self.assertEqual(self.prepare(), "made")
+
+    def test_the_background_thread_passes_the_stitched_folder_on(self):
+        self.finish()
+        seen = []
+        thread = thumbnails.start_background(
+            [self.ROUTE], self.raw, self.metadata,
+            make=lambda r, raw, meta, stitched_dir=None: seen.append(stitched_dir) or "made",
+            stitched_dir=self.stitched)
+        thread.join(5)
+        self.assertEqual(seen, [self.stitched])

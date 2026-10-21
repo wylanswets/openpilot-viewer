@@ -16,6 +16,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
 from . import tracks
+from .qlogs import _found_segments
 
 TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
 USER_AGENT = "openpilot-viewer/1.0 (+https://github.com/wylanswets/openpilot-viewer)"
@@ -230,7 +231,10 @@ def read_state(thumbs_dir, route_id):
 def needs_work(thumbs_dir, route_id, segment_count):
     """Cheap check (no log parsing): has this route not been looked at since it last grew?"""
     state = read_state(thumbs_dir, route_id)
-    return not state or state.get("segments") != segment_count
+    if not state or state.get("segments") != segment_count:
+        return True
+    # "no GPS" written before the logs were counted may have been judged on a few logs only
+    return state.get("status") == "no_gps" and "logs" not in state
 
 
 def _newest_qlog_mtime(raw_dir, route_id):
@@ -277,18 +281,21 @@ def make_thumbnail(route_id, raw_dir, metadata_dir, fetch=fetch_tile_from_osm, n
     metadata_dir = Path(metadata_dir)
     thumbs_dir = metadata_dir / "thumbs"
     segments = len(list(Path(raw_dir).glob(f"{route_id}--*")))
+    logs = len(_found_segments(route_id, raw_dir))  # folders show up before their logs have arrived
 
     if still_arriving(raw_dir, stitched_dir, route_id, now):
         return "recording"
 
     state = read_state(thumbs_dir, route_id)
     if state and state.get("segments") == segments and not force:
-        if state["status"] == "no_gps" or image_path(thumbs_dir, route_id).exists():
+        if state["status"] == "no_gps" and state.get("logs") == logs:
+            return "fresh"
+        if state["status"] != "no_gps" and image_path(thumbs_dir, route_id).exists():
             return "fresh"
 
     track = tracks.route_track(route_id, raw_dir, metadata_dir / "tracks")
     if not track["points"]:
-        _write_state(thumbs_dir, route_id, {"status": "no_gps", "segments": segments})
+        _write_state(thumbs_dir, route_id, {"status": "no_gps", "segments": segments, "logs": logs})
         return "no_gps"
 
     cache_dir = metadata_dir / "tiles"

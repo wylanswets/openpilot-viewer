@@ -18,7 +18,7 @@ from django.views.decorators.http import require_http_methods, require_POST
 from django.contrib import messages
 import shutil
 
-from . import deletion, prepare, retention, summary, tracks
+from . import deletion, diagnostics, prepare, retention, summary, tracks
 from . import thumbnails as route_thumbnails  # drive_list has a local named thumbnails
 
 DEFAULT_OLD_DATE = datetime(1900, 1, 1)
@@ -307,6 +307,13 @@ def drive_summary(request, route_id):
     if not tracks.VALID_ROUTE_RE.match(route_id):
         raise Http404("Unknown route")
     return JsonResponse(summary.route_summary(route_id, RAW_DIR, METADATA_DIR / "summaries"))
+
+
+def drive_diagnostics(request, route_id):
+    """Vehicle and device diagnostics of a route as JSON, for the panel on the drive page."""
+    if not tracks.VALID_ROUTE_RE.match(route_id):
+        raise Http404("Unknown route")
+    return JsonResponse(diagnostics.route_diagnostics(route_id, RAW_DIR, METADATA_DIR / "diagnostics"))
 
 
 def drive_thumbnail(request, route_id):

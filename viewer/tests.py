@@ -1799,3 +1799,225 @@ class RetentionEnforcerThreadTests(TestCase):
         first = retention.start_enforcer(lambda: None, sleep=lambda s: stop.wait(5))
         self.assertIs(retention.start_enforcer(lambda: None, sleep=lambda s: stop.wait(5)), first)
         stop.set()
+
+
+def write_diag_qlog(path, car=(), panda=(), peripheral=(), device=(), radar=(), onroad=()):
+    """Write a qlog.zst for the diagnostics tests.
+
+    car:        (t, v, accel, extras dict) per carState.
+    panda:      (t, receiveErrorCnt on bus 1, resetCnt on bus 1) per pandaStates.
+    peripheral: (t, millivolts); device: (t, temp C); radar: (t, dRel, vRel).
+    onroad:     (t, [names]) per onroadEvents.
+    """
+    import zstandard as zstd
+
+    schema = tracks._schema()
+    timed = []
+
+    def message(t):
+        return schema.Event.new_message(logMonoTime=int(t * 1e9) + 1)
+
+    for t, v, accel, extras in car:
+        event = message(t)
+        c = event.init("carState")
+        c.vEgo, c.aEgo = v, accel
+        for key, value in extras.items():
+            setattr(c, key, value)
+        timed.append((t, event.to_bytes()))
+    for t, rec, resets in panda:
+        event = message(t)
+        p = event.init("pandaStates", 1)[0]
+        p.canState1.receiveErrorCnt, p.canState1.canCoreResetCnt = rec, resets
+        timed.append((t, event.to_bytes()))
+    for t, mv in peripheral:
+        event = message(t)
+        event.init("peripheralState").voltage = mv
+        timed.append((t, event.to_bytes()))
+    for t, temp in device:
+        event = message(t)
+        event.init("deviceState").maxTempC = temp
+        timed.append((t, event.to_bytes()))
+    for t, d_rel, v_rel in radar:
+        event = message(t)
+        lead = event.init("radarState").leadOne
+        lead.status, lead.dRel, lead.vRel = True, d_rel, v_rel
+        timed.append((t, event.to_bytes()))
+    for t, names in onroad:
+        event = message(t)
+        listing = event.init("onroadEvents", len(names))
+        for i, name in enumerate(names):
+            listing[i].name = name
+        timed.append((t, event.to_bytes()))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(zstd.ZstdCompressor().compress(b"".join(chunk for _, chunk in sorted(timed, key=lambda x: x[0]))))
+
+
+def car_run(start, seconds, v=20.0, accel=0.0, **extras):
+    """10 Hz carState samples."""
+    return [(start + i / 10, v, accel, extras) for i in range(int(seconds * 10))]
+
+
+class DiagnosticsTests(TestCase):
+    ROUTE = "0000000d--dddddddddd"
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        self.raw, self.cache = root / "raw", root / "metadata" / "diagnostics"
+        self.raw.mkdir()
+        patcher = mock.patch.multiple(views, RAW_DIR=self.raw, METADATA_DIR=root / "metadata")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def segment(self, number, **streams):
+        write_diag_qlog(self.raw / f"{self.ROUTE}--{number}" / "qlog.zst", **streams)
+
+    def merged(self):
+        from viewer import diagnostics
+        segments = qlogs.cached_segments(
+            self.ROUTE, self.raw, self.cache / f"{self.ROUTE}.json", diagnostics.parse_segment, diagnostics.CACHE_VERSION)
+        return diagnostics.merge(segments)
+
+    def present(self):
+        from viewer import diagnostics
+        return diagnostics.route_diagnostics(self.ROUTE, self.raw, self.cache)
+
+    def rows(self, result, title):
+        return dict(next(s for s in result["sections"] if s["title"] == title)["rows"])
+
+    def texts(self, result):
+        return [f["text"] for f in result["flags"]]
+
+    def test_hard_braking_counts_events_not_samples(self):
+        # two separate 1 s stops harder than 3 m/s2, one gentle one
+        self.segment(0, car=car_run(0, 2) + car_run(2, 1, accel=-4.0) + car_run(3, 2)
+                     + car_run(5, 1, accel=-5.0) + car_run(6, 1, accel=-1.0))
+        m = self.merged()
+        self.assertEqual(m["hard"], 2)
+        self.assertAlmostEqual(m["a_min"], -5.0, places=2)
+        self.assertIn("0.51 g", self.rows(self.present(), "Braking and driving")["Hardest braking"])
+
+    def test_braking_across_a_segment_boundary_is_one_event(self):
+        self.segment(0, car=car_run(0, 2) + car_run(2, 1, accel=-4.0))
+        self.segment(1, car=car_run(0, 1, accel=-4.0) + car_run(1, 2))
+        self.assertEqual(self.merged()["hard"], 1)
+
+    def test_braking_in_a_missing_segment_gap_is_two_events(self):
+        self.segment(0, car=car_run(0, 1) + car_run(1, 1, accel=-4.0))
+        self.segment(2, car=car_run(0, 1, accel=-4.0) + car_run(1, 1))
+        self.assertEqual(self.merged()["hard"], 2)
+
+    def test_standing_still_is_not_braking(self):
+        self.segment(0, car=car_run(0, 2, v=0.0, accel=-4.0))
+        self.assertEqual(self.merged()["hard"], 0)
+
+    def test_can_errors_flag_with_the_rule_text(self):
+        self.segment(0, car=car_run(0, 2), panda=[(0, 0, 0), (1, 96, 1), (2, 40, 2)])
+        result = self.present()
+        flag = next(f for f in result["flags"] if f["text"].startswith("CAN bus errors"))
+        self.assertEqual(flag["level"], "warning")
+        self.assertIn("96", flag["text"])
+        self.assertIn("96", flag["rule"])
+        self.assertEqual(self.rows(result, "CAN bus and panda")["CAN controller resets"], "bus 0: 0, bus 1: 2, bus 2: 0")
+
+    def test_below_the_threshold_nothing_is_flagged(self):
+        self.segment(0, car=car_run(0, 2), panda=[(0, 0, 0), (1, 95, 0)])
+        self.assertEqual([f for f in self.present()["flags"] if f["level"] == "warning"], [])
+
+    def test_steering_fault_stretch_joins_across_segments(self):
+        self.segment(0, car=car_run(0, 8) + car_run(8, 2, steerFaultTemporary=True))
+        self.segment(1, car=car_run(0, 2, steerFaultTemporary=True) + car_run(2, 8))
+        m = self.merged()
+        self.assertAlmostEqual(m["eps_fault"]["longest"], 4.0, delta=0.3)
+        self.assertTrue(any("Steering was temporarily unavailable" in t for t in self.texts(self.present())))
+
+    def test_short_steering_faults_are_not_flagged(self):
+        self.segment(0, car=car_run(0, 8) + car_run(8, 2, steerFaultTemporary=True))
+        self.assertFalse(any("Steering" in t for t in self.texts(self.present())))
+
+    def test_low_voltage_only_counts_while_moving(self):
+        moving_low = [(t / 2, 11500) for t in range(0, 240)]   # 120 s at 11.5 V
+        self.segment(0, car=car_run(0, 60) + car_run(60, 60, v=0.0), peripheral=moving_low)
+        m = self.merged()
+        self.assertAlmostEqual(m["low_voltage"]["total"], 60, delta=2)
+        self.assertTrue(any("12 V supply" in t for t in self.texts(self.present())))
+
+    def test_cruising_voltage_of_a_honda_is_fine(self):
+        self.segment(0, car=car_run(0, 120), peripheral=[(t / 2, 12600) for t in range(0, 240)])
+        self.assertFalse(any("12 V" in t for t in self.texts(self.present())))
+
+    def test_hot_device_is_flagged_and_shown_in_both_units(self):
+        self.segment(0, car=car_run(0, 2), device=[(0, 60), (1, 85)])
+        result = self.present()
+        self.assertTrue(any("85 °C" in t for t in self.texts(result)))
+        self.assertEqual(self.rows(result, "Device")["Highest temperature"], "85 °C (185 °F)")
+
+    def test_radar_ignores_slow_driving(self):
+        self.segment(0, car=car_run(0, 5, v=2.0) + car_run(5, 5, v=20.0),
+                     radar=[(1, 3.0, 0.0), (7, 40.0, -5.0)])
+        lead = self.merged()["lead"]
+        self.assertEqual(lead["d_min"], 40.0)
+        self.assertAlmostEqual(lead["gap_min_s"], 2.0, places=2)
+        self.assertEqual(lead["closing_max"], 5.0)
+
+    def test_events_count_new_alerts_not_ones_already_active(self):
+        self.segment(0, car=car_run(0, 5), onroad=[(0, ["steerSaturated"]), (1, []), (2, ["steerSaturated"]), (3, [])])
+        self.assertEqual(self.merged()["events"], {"steerSaturated": 1})
+        self.assertIn("Turn too tight for the system", self.rows(self.present(), "Alerts and events"))
+
+    def test_missing_segments_are_called_out(self):
+        self.segment(0, car=car_run(0, 2))
+        self.segment(2, car=car_run(0, 2))
+        # segment 1 never arrived: the drive spans 3 numbers but only 2 were read
+        self.assertTrue(any("1 of 3 log segments" in t for t in self.texts(self.present())))
+
+    def test_sections_without_data_are_left_out(self):
+        self.segment(0, car=car_run(0, 2))
+        titles = [s["title"] for s in self.present()["sections"]]
+        self.assertIn("Braking and driving", titles)
+        self.assertNotIn("Car modules", titles)
+        self.assertNotIn("Driver monitoring", titles)
+
+    def test_module_versions_show_text_and_drop_unreadable_duplicates(self):
+        from viewer import diagnostics
+        rows = diagnostics._modules([["eps", "honda", b"39990-THR-A050".hex()], ["eps", "honda", "0d20424b"],
+                                     ["srs", "honda", "ff00ff"]])
+        self.assertEqual(rows, [["eps (honda)", "39990-THR-A050"], ["srs (honda)", "ff00ff"]])
+
+    def test_endpoint_returns_the_panel_data_and_caches(self):
+        self.segment(0, car=car_run(0, 2), device=[(0, 60)])
+        response = self.client.get(reverse("drive_diagnostics", args=[self.ROUTE]))
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["segments"], 1)
+        self.assertTrue((self.cache / f"{self.ROUTE}.json").is_file())
+
+    def test_endpoint_rejects_bad_ids(self):
+        self.assertEqual(self.client.get(reverse("drive_diagnostics", args=["bad.id"])).status_code, 404)
+
+    def test_cached_diagnostics_never_parses(self):
+        from viewer import diagnostics
+        self.segment(0, car=car_run(0, 2))
+        with mock.patch.object(diagnostics, "parse_segment", side_effect=AssertionError("parsed")):
+            self.assertIsNone(diagnostics.cached_diagnostics(self.ROUTE, self.raw, self.cache))
+        self.present()
+        with mock.patch.object(diagnostics, "parse_segment", side_effect=AssertionError("parsed")):
+            self.assertIsNotNone(diagnostics.cached_diagnostics(self.ROUTE, self.raw, self.cache))
+
+    def test_drive_page_does_not_parse_logs(self):
+        from viewer import diagnostics
+        self.segment(0, car=car_run(0, 2))
+        with mock.patch.object(diagnostics, "parse_segment", side_effect=AssertionError("parsed")):
+            response = self.client.get(reverse("drive_detail", args=[self.ROUTE]))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "diag-section")
+
+    def test_prepare_warms_the_diagnostics_of_a_finished_drive(self):
+        self.segment(0, car=car_run(0, 2))
+        stitched = self.raw.parent / "stitched"
+        (stitched / self.ROUTE).mkdir(parents=True)
+        (stitched / self.ROUTE / ".done").write_text("")
+        with mock.patch.object(prepare.thumbnails, "make_thumbnail", return_value="made"):
+            prepare.prepare_route(self.ROUTE, self.raw, self.cache.parent, stitched_dir=stitched)
+        self.assertTrue((self.cache / f"{self.ROUTE}.json").is_file())

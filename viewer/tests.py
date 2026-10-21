@@ -824,6 +824,12 @@ class MakeThumbnailTests(TestCase):
         self.make()
         self.assertEqual(thumbnails.display_state(thumbs, self.ROUTE, 1), "image")
 
+    def test_a_folder_without_segments_is_settled_as_no_map(self):
+        thumbs = self.metadata / "thumbs"
+        thumbnails._write_state(thumbs, "boot", {"status": "no_gps", "segments": 0})
+        self.assertFalse(thumbnails.needs_work(thumbs, "boot", 0))
+        self.assertEqual(thumbnails.display_state(thumbs, "boot", 0), "none")
+
     def test_display_state_without_any_state_is_coming(self):
         self.assertEqual(thumbnails.display_state(self.metadata / "thumbs", self.ROUTE, 1), "coming")
 

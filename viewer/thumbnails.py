@@ -235,7 +235,7 @@ def needs_work(thumbs_dir, route_id, segment_count):
         return True
     # "no GPS" written before the logs were counted may have been judged on a few logs only
     if state.get("status") == "no_gps":
-        return "logs" not in state
+        return "logs" not in state and segment_count > 0  # nothing to judge again in a folder without segments
     return not image_path(thumbs_dir, route_id).exists()  # an image that was made but is gone is made again
 
 

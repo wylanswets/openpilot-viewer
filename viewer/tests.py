@@ -140,6 +140,7 @@ class DriveListCameraTests(TestCase):
 
     def test_list_asks_for_missing_thumbnails_and_leaves_a_placeholder(self):
         self.make_drive("00000013--6666666666", ["fcamera"])
+        (self.raw / "00000013--6666666666--0").mkdir()  # a drive with a recorded segment
         response = self.client.get(reverse("drive_list"))
         self.assertContains(response, 'data-src="/drive/00000013--6666666666/thumbnail.png"')
         self.assertContains(response, "thumbnail-pending")
@@ -164,13 +165,13 @@ class DriveListCameraTests(TestCase):
 
     def test_a_stray_folder_without_segments_does_not_wait_for_a_map_forever(self):
         (self.raw / "boot").mkdir()
-        thumbnails._write_state(self.metadata / "thumbs", "boot", {"status": "no_gps", "segments": 0})
-        response = self.client.get(reverse("drive_list"))
+        response = self.client.get(reverse("drive_list"))  # no saved answer for it at all
         self.assertContains(response, ">No map available<")
         self.assertNotContains(response, "Map coming")
 
     def test_route_whose_map_is_not_made_yet_says_it_is_coming(self):
         self.make_drive("00000013--6666666666", ["fcamera"])
+        (self.raw / "00000013--6666666666--0").mkdir()  # a drive with a recorded segment
         response = self.client.get(reverse("drive_list"))
         self.assertContains(response, "Map coming")
         self.assertContains(response, 'data-src="/drive/00000013--6666666666/thumbnail.png"')
@@ -178,7 +179,8 @@ class DriveListCameraTests(TestCase):
 
     def test_route_whose_tiles_could_not_be_fetched_says_it_will_retry(self):
         self.make_drive("00000013--6666666666", ["fcamera"])
-        thumbnails._write_state(self.metadata / "thumbs", "00000013--6666666666", {"status": "failed", "segments": 0, "logs": 1})
+        (self.raw / "00000013--6666666666--0").mkdir()  # a drive with a recorded segment
+        thumbnails._write_state(self.metadata / "thumbs", "00000013--6666666666", {"status": "failed", "segments": 1, "logs": 1})
         response = self.client.get(reverse("drive_list"))
         self.assertContains(response, "Map unavailable, will retry")
         self.assertContains(response, 'data-src="/drive/00000013--6666666666/thumbnail.png"')

@@ -136,7 +136,7 @@ class DriveListCameraTests(TestCase):
         response = self.client.get(reverse("drive_list"))
         self.assertContains(response, "/drive/00000012--5555555555/thumbnail.png?v=")
         self.assertContains(response, 'alt="Map of the route"')
-        self.assertNotContains(response, "thumbnail-pending\" data-src")
+        self.assertNotContains(response, 'class="thumbnail-pending')
 
     def test_list_asks_for_missing_thumbnails_and_leaves_a_placeholder(self):
         self.make_drive("00000013--6666666666", ["fcamera"])
@@ -151,7 +151,7 @@ class DriveListCameraTests(TestCase):
         thumbnails._write_state(self.metadata / "thumbs", "00000014--7777777777", {"status": "no_gps", "segments": 0, "logs": 0})
         with mock.patch.object(summary, "cached_duration", return_value=60.0):
             response = self.client.get(reverse("drive_list"))
-        self.assertNotContains(response, 'class="thumbnail-pending" data-src')
+        self.assertNotContains(response, 'class="thumbnail-pending')
         self.assertEqual(self.start_background.call_args.args[0], [])  # nothing left to do for it
 
     def test_route_without_gps_says_so_in_a_box_the_size_of_the_map(self):
@@ -180,7 +180,7 @@ class DriveListCameraTests(TestCase):
         thumbnails._write_state(self.metadata / "thumbs", "00000014--7777777777", {"status": "no_gps", "segments": 0, "logs": 0})
         self.make_drive("00000014--7777777777", ["fcamera"])
         response = self.client.get(reverse("drive_list"))  # no cached duration
-        self.assertNotContains(response, 'class="thumbnail-pending" data-src')
+        self.assertNotContains(response, 'class="thumbnail-pending')
         self.assertEqual(self.start_background.call_args.args[0], ["00000014--7777777777"])
         self.assertIs(self.start_background.call_args.kwargs["make"], prepare.prepare_route)
 

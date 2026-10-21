@@ -164,8 +164,7 @@ class DriveListCameraTests(TestCase):
 
     def test_a_stray_folder_without_segments_does_not_wait_for_a_map_forever(self):
         (self.raw / "boot").mkdir()
-        thumbnails._write_state(self.metadata / "thumbs", "boot", {"status": "no_gps", "segments": 0})
-        response = self.client.get(reverse("drive_list"))
+        response = self.client.get(reverse("drive_list"))  # no saved answer for it at all
         self.assertContains(response, ">No map available<")
         self.assertNotContains(response, "Map coming")
 

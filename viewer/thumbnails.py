@@ -231,10 +231,28 @@ def read_state(thumbs_dir, route_id):
 def needs_work(thumbs_dir, route_id, segment_count):
     """Cheap check (no log parsing): has this route not been looked at since it last grew?"""
     state = read_state(thumbs_dir, route_id)
-    if not state or state.get("segments") != segment_count:
+    if not state or state.get("segments") != segment_count or state.get("status") == "failed":
         return True
     # "no GPS" written before the logs were counted may have been judged on a few logs only
-    return state.get("status") == "no_gps" and "logs" not in state
+    if state.get("status") == "no_gps":
+        return "logs" not in state
+    return not image_path(thumbs_dir, route_id).exists()  # an image that was made but is gone is made again
+
+
+def display_state(thumbs_dir, route_id, segment_count):
+    """What the drive list shows for a route: "image", "none" (no GPS), "failed" (tiles unavailable) or "coming"."""
+    if image_path(thumbs_dir, route_id).exists():
+        return "image"
+    if not needs_work(thumbs_dir, route_id, segment_count):
+        return "none"  # only a "no GPS" answer gets here: every other case either has an image or needs work
+    state = read_state(thumbs_dir, route_id)
+    return "failed" if state and state.get("status") == "failed" and state.get("segments") == segment_count else "coming"
+
+
+def route_ids(raw_dir):
+    """The routes that have folders in the raw directory, newest first."""
+    found = {folder.name.rsplit("--", 1)[0] for folder in Path(raw_dir).glob("*--*") if folder.name.rsplit("--", 1)[-1].isdigit()}
+    return sorted(found, reverse=True)
 
 
 def _newest_qlog_mtime(raw_dir, route_id):
@@ -301,6 +319,7 @@ def make_thumbnail(route_id, raw_dir, metadata_dir, fetch=fetch_tile_from_osm, n
     cache_dir = metadata_dir / "tiles"
     image = render(track["lines"], lambda z, x, y: get_tile(z, x, y, cache_dir, fetch, now))
     if image is None:
+        _write_state(thumbs_dir, route_id, {"status": "failed", "segments": segments, "logs": logs})
         return "failed"
 
     thumbs_dir.mkdir(parents=True, exist_ok=True)

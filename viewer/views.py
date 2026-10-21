@@ -204,7 +204,9 @@ def drive_list(request):
         image = route_thumbnails.image_path(thumbs_dir, route_id)
         if image.exists():
             drive["thumbnail_url"] = f"{reverse('drive_thumbnail', args=[route_id])}?v={int(image.stat().st_mtime)}"
-        if route_thumbnails.needs_work(thumbs_dir, route_id, len(raw_routes_grouped.get(route_id, []))):
+        segment_count = len(raw_routes_grouped.get(route_id, []))
+        drive["thumbnail_state"] = route_thumbnails.display_state(thumbs_dir, route_id, segment_count)
+        if route_thumbnails.needs_work(thumbs_dir, route_id, segment_count):
             drive["thumbnail_pending"] = True
             missing.append(route_id)
         if route_id in missing or drive["duration_s"] is None:

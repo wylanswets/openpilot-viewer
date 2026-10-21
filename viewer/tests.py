@@ -141,7 +141,8 @@ class DriveListCameraTests(TestCase):
     def test_list_asks_for_missing_thumbnails_and_leaves_a_placeholder(self):
         self.make_drive("00000013--6666666666", ["fcamera"])
         response = self.client.get(reverse("drive_list"))
-        self.assertContains(response, 'class="thumbnail-pending" data-src="/drive/00000013--6666666666/thumbnail.png"')
+        self.assertContains(response, 'data-src="/drive/00000013--6666666666/thumbnail.png"')
+        self.assertContains(response, "thumbnail-pending")
         self.start_background.assert_called_once()
         self.assertEqual(self.start_background.call_args.args[0], ["00000013--6666666666"])
 

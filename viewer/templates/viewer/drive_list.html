@@ -106,7 +106,11 @@
               <img src="{{ drive.thumbnail_url }}" alt="Map of the route" width="640" height="260"
                    loading="lazy" class="w-full h-auto rounded-md mt-3">
             {% elif drive.thumbnail_pending %}
-              <div class="thumbnail-pending" data-src="{% url 'drive_thumbnail' drive.route_id %}"></div>
+              <div class="thumbnail-pending map-placeholder w-full rounded-md mt-3 flex items-center justify-center text-sm text-gray-500 bg-gray-200 dark:bg-slate-700 dark:text-slate-400"
+                   style="aspect-ratio: 640 / 260" data-src="{% url 'drive_thumbnail' drive.route_id %}">{% if drive.thumbnail_state == "failed" %}Map unavailable, will retry{% else %}Map coming&hellip;{% endif %}</div>
+            {% elif drive.thumbnail_state == "none" %}
+              <div class="map-placeholder w-full rounded-md mt-3 flex items-center justify-center text-sm text-gray-500 bg-gray-200 dark:bg-slate-700 dark:text-slate-400"
+                   style="aspect-ratio: 640 / 260">No map available</div>
             {% endif %}
           </div>
         </a>
@@ -139,7 +143,7 @@
         img.height = 260;
         img.className = "w-full h-auto rounded-md mt-3";
         img.alt = "Map of the route";
-        holder.appendChild(img);
+        holder.replaceWith(img);
       };
       img.onerror = function () { if (n < 20) setTimeout(function () { attempt(n + 1); }, 8000); };
       img.src = holder.dataset.src + "?t=" + Date.now();

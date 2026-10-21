@@ -9,9 +9,16 @@ class ViewerConfig(AppConfig):
     name = 'viewer'
 
     def ready(self):
-        from . import retention
+        from . import prepare, retention
         if retention.should_start_enforcer(os.environ, sys.argv):
             retention.start_enforcer(self._enforce_retention)
+        if prepare.should_start_worker(os.environ, sys.argv):
+            prepare.start_worker(self._prepare_drives)
+
+    @staticmethod
+    def _prepare_drives():
+        from . import prepare, views
+        prepare.run_pass(views.RAW_DIR, views.METADATA_DIR, views.STITCHED_DIR)
 
     @staticmethod
     def _enforce_retention():

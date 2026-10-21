@@ -136,12 +136,13 @@ class DriveListCameraTests(TestCase):
         response = self.client.get(reverse("drive_list"))
         self.assertContains(response, "/drive/00000012--5555555555/thumbnail.png?v=")
         self.assertContains(response, 'alt="Map of the route"')
-        self.assertNotContains(response, "thumbnail-pending\" data-src")
+        self.assertNotContains(response, 'class="thumbnail-pending')
 
     def test_list_asks_for_missing_thumbnails_and_leaves_a_placeholder(self):
         self.make_drive("00000013--6666666666", ["fcamera"])
         response = self.client.get(reverse("drive_list"))
-        self.assertContains(response, 'class="thumbnail-pending" data-src="/drive/00000013--6666666666/thumbnail.png"')
+        self.assertContains(response, 'data-src="/drive/00000013--6666666666/thumbnail.png"')
+        self.assertContains(response, "thumbnail-pending")
         self.start_background.assert_called_once()
         self.assertEqual(self.start_background.call_args.args[0], ["00000013--6666666666"])
 
@@ -150,14 +151,43 @@ class DriveListCameraTests(TestCase):
         thumbnails._write_state(self.metadata / "thumbs", "00000014--7777777777", {"status": "no_gps", "segments": 0, "logs": 0})
         with mock.patch.object(summary, "cached_duration", return_value=60.0):
             response = self.client.get(reverse("drive_list"))
-        self.assertNotContains(response, 'class="thumbnail-pending" data-src')
+        self.assertNotContains(response, 'class="thumbnail-pending')
         self.assertEqual(self.start_background.call_args.args[0], [])  # nothing left to do for it
+
+    def test_route_without_gps_says_so_in_a_box_the_size_of_the_map(self):
+        self.make_drive("00000014--7777777777", ["fcamera"])
+        thumbnails._write_state(self.metadata / "thumbs", "00000014--7777777777", {"status": "no_gps", "segments": 0, "logs": 0})
+        response = self.client.get(reverse("drive_list"))
+        self.assertContains(response, ">No map available<")
+        self.assertContains(response, "aspect-ratio: 640 / 260")
+        self.assertNotContains(response, "Map coming")
+
+    def test_a_stray_folder_without_segments_does_not_wait_for_a_map_forever(self):
+        (self.raw / "boot").mkdir()
+        thumbnails._write_state(self.metadata / "thumbs", "boot", {"status": "no_gps", "segments": 0})
+        response = self.client.get(reverse("drive_list"))
+        self.assertContains(response, ">No map available<")
+        self.assertNotContains(response, "Map coming")
+
+    def test_route_whose_map_is_not_made_yet_says_it_is_coming(self):
+        self.make_drive("00000013--6666666666", ["fcamera"])
+        response = self.client.get(reverse("drive_list"))
+        self.assertContains(response, "Map coming")
+        self.assertContains(response, 'data-src="/drive/00000013--6666666666/thumbnail.png"')
+        self.assertNotContains(response, "No map available")
+
+    def test_route_whose_tiles_could_not_be_fetched_says_it_will_retry(self):
+        self.make_drive("00000013--6666666666", ["fcamera"])
+        thumbnails._write_state(self.metadata / "thumbs", "00000013--6666666666", {"status": "failed", "segments": 0, "logs": 1})
+        response = self.client.get(reverse("drive_list"))
+        self.assertContains(response, "Map unavailable, will retry")
+        self.assertContains(response, 'data-src="/drive/00000013--6666666666/thumbnail.png"')
 
     def test_a_drive_without_a_known_duration_is_queued_for_the_background_thread(self):
         thumbnails._write_state(self.metadata / "thumbs", "00000014--7777777777", {"status": "no_gps", "segments": 0, "logs": 0})
         self.make_drive("00000014--7777777777", ["fcamera"])
         response = self.client.get(reverse("drive_list"))  # no cached duration
-        self.assertNotContains(response, 'class="thumbnail-pending" data-src')
+        self.assertNotContains(response, 'class="thumbnail-pending')
         self.assertEqual(self.start_background.call_args.args[0], ["00000014--7777777777"])
         self.assertIs(self.start_background.call_args.kwargs["make"], prepare.prepare_route)
 
@@ -786,6 +816,34 @@ class MakeThumbnailTests(TestCase):
 
         self.assertEqual(self.make(fetch=failing), "failed")
         self.assertFalse(thumbnails.image_path(self.metadata / "thumbs", self.ROUTE).exists())
+        self.assertTrue(thumbnails.needs_work(self.metadata / "thumbs", self.ROUTE, 1))
+        self.assertEqual(self.make(), "made")
+
+    def test_a_failed_tile_fetch_is_shown_as_failed_until_it_works(self):
+        self.segment(0, [(1, 35.0, -82.0, 5.0), (1, 35.001, -82.001, 5.0)])
+
+        def failing(z, x, y):
+            raise OSError("no internet")
+
+        self.make(fetch=failing)
+        thumbs = self.metadata / "thumbs"
+        self.assertEqual(thumbnails.display_state(thumbs, self.ROUTE, 1), "failed")
+        self.make()
+        self.assertEqual(thumbnails.display_state(thumbs, self.ROUTE, 1), "image")
+
+    def test_a_folder_without_segments_is_settled_as_no_map(self):
+        thumbs = self.metadata / "thumbs"
+        thumbnails._write_state(thumbs, "boot", {"status": "no_gps", "segments": 0})
+        self.assertFalse(thumbnails.needs_work(thumbs, "boot", 0))
+        self.assertEqual(thumbnails.display_state(thumbs, "boot", 0), "none")
+
+    def test_display_state_without_any_state_is_coming(self):
+        self.assertEqual(thumbnails.display_state(self.metadata / "thumbs", self.ROUTE, 1), "coming")
+
+    def test_an_image_that_has_gone_missing_is_made_again(self):
+        self.segment(0, [(1, 35.0, -82.0, 5.0), (1, 35.001, -82.001, 5.0)])
+        self.make()
+        thumbnails.image_path(self.metadata / "thumbs", self.ROUTE).unlink()
         self.assertTrue(thumbnails.needs_work(self.metadata / "thumbs", self.ROUTE, 1))
         self.assertEqual(self.make(), "made")
 
@@ -2038,3 +2096,104 @@ class DiagnosticsTests(TestCase):
         with mock.patch.object(prepare.thumbnails, "make_thumbnail", return_value="made"):
             prepare.prepare_route(self.ROUTE, self.raw, self.cache.parent, stitched_dir=stitched)
         self.assertTrue((self.cache / f"{self.ROUTE}.json").is_file())
+
+
+class PrepareWorkerTests(TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        self.raw, self.stitched, self.metadata = root / "raw", root / "stitched", root / "metadata"
+        self.raw.mkdir()
+        self.stitched.mkdir()
+        for route in ("00000030--aaaaaaaaaa", "00000031--bbbbbbbbbb", "00000032--cccccccccc"):
+            write_qlog(self.raw / f"{route}--0" / "qlog.zst", [(1, 35.0, -82.0, 5.0)])
+        self.addCleanup(setattr, thumbnails, "_backoff_until", 0.0)
+
+    def finished(self, route):
+        """Mark the route as fully prepared: image, state, duration and diagnostics all there."""
+        thumbs = self.metadata / "thumbs"
+        thumbs.mkdir(parents=True, exist_ok=True)
+        thumbnails.image_path(thumbs, route).write_bytes(b"png")
+        thumbnails._write_state(thumbs, route, {"status": "ok", "segments": 1, "logs": 1})
+        (self.metadata / "diagnostics").mkdir(exist_ok=True)
+        (self.metadata / "diagnostics" / f"{route}.json").write_text("{}")
+
+    def run_pass(self, results):
+        with mock.patch.object(prepare, "prepare_route", side_effect=lambda r, *a, **k: results.get(r, "made")) as called, \
+             mock.patch.object(summary, "cached_duration", return_value=60.0):
+            out = prepare.run_pass(self.raw, self.metadata, self.stitched)
+        return out, [c.args[0] for c in called.call_args_list]
+
+    def test_goes_through_every_drive_that_needs_work_newest_first(self):
+        self.finished("00000031--bbbbbbbbbb")
+        out, called = self.run_pass({})
+        self.assertEqual(called, ["00000032--cccccccccc", "00000030--aaaaaaaaaa"])
+        self.assertEqual(set(out.values()), {"made"})
+
+    def test_a_drive_without_a_known_duration_is_prepared_too(self):
+        for route in ("00000030--aaaaaaaaaa", "00000031--bbbbbbbbbb", "00000032--cccccccccc"):
+            self.finished(route)
+        with mock.patch.object(prepare, "prepare_route", return_value="fresh") as called, \
+             mock.patch.object(summary, "cached_duration", return_value=None):
+            prepare.run_pass(self.raw, self.metadata, self.stitched)
+        self.assertEqual(called.call_count, 3)
+
+    def test_a_failure_stops_the_pass_and_backs_off(self):
+        out, called = self.run_pass({"00000032--cccccccccc": "failed"})
+        self.assertEqual(called, ["00000032--cccccccccc"])
+        out, called = self.run_pass({})  # still backing off
+        self.assertEqual((out, called), ({}, []))
+
+    def test_an_exception_in_one_drive_counts_as_a_failure(self):
+        with mock.patch.object(prepare, "prepare_route", side_effect=RuntimeError("boom")), \
+             mock.patch.object(summary, "cached_duration", return_value=None), \
+             mock.patch("sys.stderr"):
+            out = prepare.run_pass(self.raw, self.metadata, self.stitched)
+        self.assertEqual(out, {"00000032--cccccccccc": "failed"})
+
+    def test_does_nothing_while_another_run_is_going(self):
+        with thumbnails._run_lock:
+            out, called = self.run_pass({})
+        self.assertEqual((out, called), ({}, []))
+        self.assertFalse(thumbnails._run_lock.locked())
+
+    def test_routes_are_found_from_the_raw_folders_only(self):
+        (self.raw / "boot").mkdir()
+        self.assertEqual(thumbnails.route_ids(self.raw),
+                         ["00000032--cccccccccc", "00000031--bbbbbbbbbb", "00000030--aaaaaaaaaa"])
+
+    def test_makes_the_image_of_a_finished_drive_without_anyone_opening_the_list(self):
+        route = "00000030--aaaaaaaaaa"
+        (self.stitched / route).mkdir()
+        (self.stitched / route / ".done").touch()
+        real = prepare.prepare_route
+        with mock.patch.object(prepare, "prepare_route",
+                               side_effect=lambda r, raw, md, **k: real(r, raw, md, fetch=lambda z, x, y: tile_png(), **k)):
+            out = prepare.run_pass(self.raw, self.metadata, self.stitched, now=time.time() + 3600)
+        self.assertEqual(out[route], "made")
+        self.assertTrue(thumbnails.image_path(self.metadata / "thumbs", route).exists())
+        self.assertTrue((self.metadata / "diagnostics" / f"{route}.json").exists())
+
+    def test_should_start_worker_follows_the_setting(self):
+        self.assertTrue(prepare.should_start_worker({}, ["/usr/bin/gunicorn"]))
+        self.assertFalse(prepare.should_start_worker({}, ["manage.py"]))
+        self.assertTrue(prepare.should_start_worker({"MAP_WORKER": "1"}, ["manage.py"]))
+        self.assertFalse(prepare.should_start_worker({"MAP_WORKER": "0"}, ["/usr/bin/gunicorn"]))
+
+    def test_worker_repeats_and_survives_a_failing_pass(self):
+        calls, stop = [], threading.Event()
+
+        def run_once():
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError("boom")
+            if len(calls) >= 3:
+                stop.set()
+
+        prepare._worker = None
+        with mock.patch("sys.stderr"):
+            thread = prepare.start_worker(run_once, interval=0, first_delay=0, sleep=lambda s: stop.is_set() and time.sleep(5))
+            self.assertTrue(stop.wait(5))
+        self.assertGreaterEqual(len(calls), 3)
+        self.assertIs(prepare.start_worker(run_once, sleep=lambda s: time.sleep(5)), thread)  # one per process

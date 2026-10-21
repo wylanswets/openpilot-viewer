@@ -162,6 +162,13 @@ class DriveListCameraTests(TestCase):
         self.assertContains(response, "aspect-ratio: 640 / 260")
         self.assertNotContains(response, "Map coming")
 
+    def test_a_stray_folder_without_segments_does_not_wait_for_a_map_forever(self):
+        (self.raw / "boot").mkdir()
+        thumbnails._write_state(self.metadata / "thumbs", "boot", {"status": "no_gps", "segments": 0})
+        response = self.client.get(reverse("drive_list"))
+        self.assertContains(response, ">No map available<")
+        self.assertNotContains(response, "Map coming")
+
     def test_route_whose_map_is_not_made_yet_says_it_is_coming(self):
         self.make_drive("00000013--6666666666", ["fcamera"])
         response = self.client.get(reverse("drive_list"))

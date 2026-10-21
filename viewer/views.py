@@ -204,7 +204,8 @@ def drive_list(request):
         image = route_thumbnails.image_path(thumbs_dir, route_id)
         if image.exists():
             drive["thumbnail_url"] = f"{reverse('drive_thumbnail', args=[route_id])}?v={int(image.stat().st_mtime)}"
-        segment_count = len(raw_routes_grouped.get(route_id, []))
+        # the same count the thumbnail code makes (segment folders only, so a stray folder like "boot" is 0)
+        segment_count = sum(1 for d in raw_routes_grouped.get(route_id, []) if d.name.startswith(f"{route_id}--"))
         drive["thumbnail_state"] = route_thumbnails.display_state(thumbs_dir, route_id, segment_count)
         if route_thumbnails.needs_work(thumbs_dir, route_id, segment_count):
             drive["thumbnail_pending"] = True

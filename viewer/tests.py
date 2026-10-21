@@ -147,14 +147,14 @@ class DriveListCameraTests(TestCase):
 
     def test_route_known_to_have_no_gps_gets_no_placeholder(self):
         self.make_drive("00000014--7777777777", ["fcamera"])
-        thumbnails._write_state(self.metadata / "thumbs", "00000014--7777777777", {"status": "no_gps", "segments": 0})
+        thumbnails._write_state(self.metadata / "thumbs", "00000014--7777777777", {"status": "no_gps", "segments": 0, "logs": 0})
         with mock.patch.object(summary, "cached_duration", return_value=60.0):
             response = self.client.get(reverse("drive_list"))
         self.assertNotContains(response, 'class="thumbnail-pending" data-src')
         self.assertEqual(self.start_background.call_args.args[0], [])  # nothing left to do for it
 
     def test_a_drive_without_a_known_duration_is_queued_for_the_background_thread(self):
-        thumbnails._write_state(self.metadata / "thumbs", "00000014--7777777777", {"status": "no_gps", "segments": 0})
+        thumbnails._write_state(self.metadata / "thumbs", "00000014--7777777777", {"status": "no_gps", "segments": 0, "logs": 0})
         self.make_drive("00000014--7777777777", ["fcamera"])
         response = self.client.get(reverse("drive_list"))  # no cached duration
         self.assertNotContains(response, 'class="thumbnail-pending" data-src')
@@ -760,6 +760,23 @@ class MakeThumbnailTests(TestCase):
         self.assertFalse(thumbnails.needs_work(self.metadata / "thumbs", self.ROUTE, 1))
         self.assertFalse(thumbnails.image_path(self.metadata / "thumbs", self.ROUTE).exists())
         self.assertEqual(self.fetched, [])
+
+    def test_no_gps_written_by_an_older_version_is_looked_at_again(self):
+        # the old state only counted folders, which exist before their logs have arrived
+        self.segment(0, [(1, 35.0, -82.0, 5.0), (1, 35.005, -82.004, 5.0)])
+        thumbnails._write_state(self.metadata / "thumbs", self.ROUTE, {"status": "no_gps", "segments": 1})
+        self.assertTrue(thumbnails.needs_work(self.metadata / "thumbs", self.ROUTE, 1))
+        self.assertEqual(self.make(), "made")
+        self.assertFalse(thumbnails.needs_work(self.metadata / "thumbs", self.ROUTE, 1))
+
+    def test_no_gps_is_looked_at_again_when_more_logs_have_arrived(self):
+        # one folder with a log without a fix, then the same number of folders but more logs
+        self.segment(0, [(0, 35.0, -82.0, 5.0)])
+        (self.raw / f"{self.ROUTE}--1").mkdir()  # folder exists, its log has not arrived yet
+        self.assertEqual(self.make(), "no_gps")
+        self.assertEqual(self.make(), "fresh")
+        self.segment(1, [(1, 35.0, -82.0, 5.0), (1, 35.005, -82.004, 5.0)])
+        self.assertEqual(self.make(), "made")
 
     def test_a_failed_tile_fetch_leaves_nothing_behind_and_retries_later(self):
         self.segment(0, [(1, 35.0, -82.0, 5.0), (1, 35.001, -82.001, 5.0)])
